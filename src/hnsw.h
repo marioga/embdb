@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <random>
 #include <unordered_set>
 #include <vector>
