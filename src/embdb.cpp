@@ -17,14 +17,13 @@ int main() {
     hnsw::HnswConfig config;
     using IndexType = hnsw::HnswIndex<int, std::vector<int>>;
     IndexType index = IndexType(config, space);
-    hnsw::IdType id2 = index.addDebug(obj2, 1);
-    hnsw::IdType id3 = index.addDebug(obj3, 2);
-    index.addLinkDebug(id2, id3, 1);
+    hnsw::IdType id2 = index.insert(obj2, 20);
+    std::cout << id2 << " inserted" << std::endl;
+    hnsw::IdType id3 = index.insert(obj3, 30);
+    std::cout << id3 << " inserted" << std::endl;
 
-    std::unordered_set<hnsw::IdType> temp({id2});
-    auto queue = index.searchLayer(obj1, temp, 1, 1);
-    while (queue.size()) {
-        std::cout << queue.top().first << " -- " << queue.top().second << std::endl;
-        queue.pop();
+    auto ret = index.searchKNN(obj1, 1, 8);
+    for (const auto & [id, dist] : ret) {
+        std::cout << id << " -- " << dist << std::endl;
     }
 }
