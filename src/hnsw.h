@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <functional>
-#include <optional>
 #include <random>
 #include <unordered_set>
 #include <vector>
@@ -12,23 +11,6 @@
 #include "space.h"
 
 namespace hnsw {
-    struct HnswConfig {
-        size_t capacity = 1024;
-
-        size_t efConstruction = 128;
-        size_t M_ = 16;
-        size_t M0_ = 2 * M_;
-
-        size_t ef = 64;
-
-        std::optional<std::mt19937::result_type> layerGenSeed = std::nullopt;
-        // rate of layer exponential distribution; corresponds to 1/mL for mL as in the paper
-        double layerExpLambda = log(static_cast<double>(M_));
-
-        bool extendCandidates = false;
-        bool keepPrunedConnections = false;
-    };
-
     template<typename dist_t, typename ValueType, typename LabelType = size_t>
     class HnswIndex {
      public:
@@ -40,9 +22,8 @@ namespace hnsw {
         HnswIndex(const HnswConfig & config, const SpaceType & space)
             : config(config)
             , space(space)
-            , size(0)
             , capacity(config.capacity)
-            , graph(config.M_, config.M0_) {
+            , graph(config) {
             elements.reserve(capacity);
             labels.reserve(capacity);
 
@@ -54,43 +35,45 @@ namespace hnsw {
             }
         }
 
+        size_t size() const {
+            return graph.size();
+        }
+
         IdType insert(const ValueType & value, LabelType label) {
             if (auto it = labelsInv.find(label); it != labelsInv.end()) {
                 // TODO: implement updates
                 throw std::runtime_error("Label already present");
             }
 
-            if (size >= capacity) {
+            IdType id = size();
+            if (id >= capacity) {
                 throw std::runtime_error("Capacity reached -- index must be resized");
             }
 
-            IdType id = size++;
             elements.push_back(value);
             labels.push_back(label);
             labelsInv[label] = id;
 
             // determine top insertion layer by sampling from layerExpDist
             std::exponential_distribution<double> layerExpDist(config.layerExpLambda);
-            size_t insertLayer = static_cast<size_t>(std::floor(layerExpDist(layerGen)));
+            size_t maxLayer = static_cast<size_t>(std::floor(layerExpDist(layerGen)));
+            graph.insert(maxLayer);
 
-            const size_t prevMaxGlobalLayer = graph.maxGlobalLayer;
             IdType currEnterPoint = graph.enterPoint;
-
-            // add node to hnsw graph (might modify enterPoint/maxGlobalLayer)
-            graph.addNode(id, insertLayer);
-
             if (currEnterPoint == INVALID_ID) {
-                // first point ever added; nothing left to do
+                // first point ever added
+                graph.enterPoint = id;
+                graph.maxLayer = maxLayer;
                 return id;
             }
 
-            for (size_t layer = prevMaxGlobalLayer; layer > insertLayer; layer--) {
-                NNVector found = searchLayer(value, currEnterPoint, 1, layer);
-                currEnterPoint = found.front().first;
+            for (size_t layer = graph.maxLayer; layer > maxLayer; layer--) {
+                NNVector candidates = searchLayer(value, currEnterPoint, 1, layer);
+                currEnterPoint = candidates.front().first;
             }
 
             std::unordered_set<IdType> enterPoints({currEnterPoint});
-            size_t layer = std::min(insertLayer, prevMaxGlobalLayer);
+            size_t layer = std::min(maxLayer, graph.maxLayer);
             do {
                 NNVector candidates = searchLayer(value, enterPoints, config.efConstruction, layer);
                 size_t M = (layer > 0) ? config.M_ : config.M0_;
@@ -105,6 +88,11 @@ namespace hnsw {
             }
             while (layer-- > 0);
 
+            if (maxLayer > graph.maxLayer) {
+                graph.enterPoint = id;
+                graph.maxLayer = maxLayer;
+            }
+
             return id;
         }
 
@@ -114,7 +102,7 @@ namespace hnsw {
                 return NNVector();
             }
 
-            for (size_t layer = graph.maxGlobalLayer; layer > 0; layer--) {
+            for (size_t layer = graph.maxLayer; layer > 0; layer--) {
                 NNVector found = searchLayer(query, currEnterPoint, 1, layer);
                 currEnterPoint = found.front().first;
             }
@@ -253,7 +241,7 @@ namespace hnsw {
                 candidatesMinHeap.pop_back();
 
                 bool include = true;
-                const ValueType & cvalue = (*this)[cid];
+                const ValueType & cvalue = elements[cid];
                 // heuristic: include only points that are closer to query element
                 // than to any other previously returned elements
                 for (IdType rid : ret) {
@@ -286,7 +274,7 @@ namespace hnsw {
 
         void addBidirectionalLinks(IdType src, const IdVector & tgts, size_t M, size_t layer,
                                    const ValueType & query) {
-            graph.addLinks(src, tgts, layer);
+            graph.setNeighbours(src, tgts, layer);
             for (IdType tgt : tgts) {
                 graph.addLink(tgt, src, layer);
 
@@ -310,19 +298,11 @@ namespace hnsw {
         }
 
         dist_t distance(const ValueType & query, IdType id) const {
-            return distance(query, (*this)[id]);
+            return distance(query, elements[id]);
         }
 
         dist_t distance(IdType id1, IdType id2) const {
-            return distance((*this)[id1], (*this)[id2]);
-        }
-
-        ValueType & operator[](IdType id) {
-            return elements[id];
-        }
-
-        const ValueType & operator[](IdType id) const {
-            return elements[id];
+            return distance(elements[id1], elements[id2]);
         }
 
      private:
@@ -332,7 +312,6 @@ namespace hnsw {
         std::vector<ValueType> elements;
         std::vector<LabelType> labels;
         std::unordered_map<LabelType, IdType> labelsInv;
-        size_t size;
         size_t capacity;
 
         HNSWGraph graph;

@@ -35,16 +35,16 @@ void siftTest() {
     using IndexType = hnsw::HnswIndex<float, ValueType>;
 
     hnsw::HnswConfig config;
-    // config.capacity = 10000;
-    config.capacity = 1000000;
+    config.capacity = 10000;
+    // config.capacity = 1000000;
     config.ef = 128;
 
     std::cout << "Building index..." << std::endl;
     IndexType index = IndexType(config, space);
     {
         std::ifstream istrm_base;
-        // openBinaryFile("siftsmall/siftsmall_base.fvecs", &istrm_base);
-        openBinaryFile("sift/sift_base.fvecs", &istrm_base);
+        openBinaryFile("siftsmall/siftsmall_base.fvecs", &istrm_base);
+        // openBinaryFile("sift/sift_base.fvecs", &istrm_base);
 
         size_t label = 0;
         ValueType value(dim);
@@ -59,10 +59,10 @@ void siftTest() {
 
     std::ifstream istrm_gt;
     std::ifstream istrm_query;
-    // openBinaryFile("siftsmall/siftsmall_groundtruth.ivecs", &istrm_gt);
-    // openBinaryFile("siftsmall/siftsmall_query.fvecs", &istrm_query);
-    openBinaryFile("sift/sift_groundtruth.ivecs", &istrm_gt);
-    openBinaryFile("sift/sift_query.fvecs", &istrm_query);
+    openBinaryFile("siftsmall/siftsmall_groundtruth.ivecs", &istrm_gt);
+    openBinaryFile("siftsmall/siftsmall_query.fvecs", &istrm_query);
+    // openBinaryFile("sift/sift_groundtruth.ivecs", &istrm_gt);
+    // openBinaryFile("sift/sift_query.fvecs", &istrm_query);
 
     const size_t gtDim = 100;
     std::vector<int> gt(gtDim);

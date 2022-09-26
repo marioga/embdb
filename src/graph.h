@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "config.h"
+
 namespace hnsw {
     using IdType = size_t;
     using IdVector = std::vector<IdType>;
@@ -13,76 +15,49 @@ namespace hnsw {
 
     class HNSWGraph {
      public:
-        HNSWGraph(size_t maxM, size_t maxM0)
-            : maxGlobalLayer(0)
-            , enterPoint(INVALID_ID)
-            , maxM(maxM)
-            , maxM0(maxM0) {}
+        HNSWGraph(const HnswConfig & config)
+            : enterPoint(INVALID_ID)
+            , maxLayer(0)
+            , config(config) {
+            layerAdjacencyLists.reserve(config.capacity);
+        }
 
-        void addNode(IdType id, size_t layer) {
-            maxLayer[id] = layer;
-            if (enterPoint == INVALID_ID || layer > maxGlobalLayer) {
-                enterPoint = id;
-                maxGlobalLayer = layer;
+        void insert(size_t maxLayer) {
+            layerAdjacencyLists.emplace_back(maxLayer + 1);
+            std::vector<AdjacencyList> & adjLists = layerAdjacencyLists.back();
+            adjLists[0].reserve(config.M0_);
+            for (size_t layer = 1; layer <= maxLayer; layer++) {
+                adjLists[layer].reserve(config.M_);
             }
         }
 
         void addLink(IdType src, IdType tgt, size_t layer = 0) {
-            neighbours(src, layer).push_back(tgt);
-        }
-
-        void addLinks(IdType src, const IdVector & tgts, size_t layer = 0) {
-            AdjacencyList & srcAdjList = neighbours(src, layer);
-            srcAdjList.insert(srcAdjList.end(), tgts.begin(), tgts.end());
-        }
-
-        void setNeighbours(IdType src, AdjacencyList && tgts, size_t layer = 0) {
-            AdjacencyList & srcAdjList = neighbours(src, layer);
-            srcAdjList = std::forward<AdjacencyList>(tgts);
+            layerAdjacencyLists[src][layer].push_back(tgt);
         }
 
         const AdjacencyList & getNeighbours(IdType id, size_t layer = 0) const {
-            auto it = layerAdjacencyLists.find(id);
-            if (it == layerAdjacencyLists.end()) {
-                return _DUMMYADJLIST;
-            }
-
-            auto & idAdjacencyLists = it->second;
-            auto itl = idAdjacencyLists.find(layer);
-            if (itl == idAdjacencyLists.end()) {
-                return _DUMMYADJLIST;
-            }
-
-            return itl->second;
+            return layerAdjacencyLists[id][layer];
         }
 
-        size_t maxGlobalLayer;
+        void setNeighbours(IdType src, AdjacencyList && tgts, size_t layer = 0) {
+            layerAdjacencyLists[src][layer] = std::move(tgts);
+        }
+
+        void setNeighbours(IdType src, const AdjacencyList & tgts, size_t layer = 0) {
+            layerAdjacencyLists[src][layer] = tgts;
+        }
+
+        size_t size() const {
+            return layerAdjacencyLists.size();
+        }
+
         IdType enterPoint;
+        size_t maxLayer;
 
      private:
-        const size_t maxM;
-        const size_t maxM0;
+        const HnswConfig & config;
 
-        std::unordered_map<IdType, size_t> maxLayer;
-        std::unordered_map<IdType, std::unordered_map<size_t, AdjacencyList>> layerAdjacencyLists;
-
-        AdjacencyList _DUMMYADJLIST;
-
-        AdjacencyList & neighbours(IdType id, size_t layer = 0) {
-            if (auto it = maxLayer.find(id); it == maxLayer.end() || it->second < layer) {
-                throw std::runtime_error("Invalid layer");
-            }
-
-            auto & srcAdjacencyLists = layerAdjacencyLists[id];
-            if (auto it = srcAdjacencyLists.find(layer); it != srcAdjacencyLists.end()) {
-                return it->second;
-            }
-
-            // create and reserve
-            AdjacencyList & adjList = srcAdjacencyLists[layer];
-            adjList.reserve((layer) ? maxM : maxM0);
-            return adjList;
-        }
+        std::vector<std::vector<AdjacencyList>> layerAdjacencyLists;
     };
 } // namespace  hnsw
 #endif // GRAPH_H
