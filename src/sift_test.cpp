@@ -37,6 +37,7 @@ void siftTest() {
     hnsw::HnswConfig config;
     // config.capacity = 10000;
     config.capacity = 1000000;
+    config.ef = 128;
 
     std::cout << "Building index..." << std::endl;
     IndexType index = IndexType(config, space);
@@ -60,7 +61,7 @@ void siftTest() {
     std::ifstream istrm_query;
     // openBinaryFile("siftsmall/siftsmall_groundtruth.ivecs", &istrm_gt);
     // openBinaryFile("siftsmall/siftsmall_query.fvecs", &istrm_query);
-    openBinaryFile("siftsmall/sift_groundtruth.ivecs", &istrm_gt);
+    openBinaryFile("sift/sift_groundtruth.ivecs", &istrm_gt);
     openBinaryFile("sift/sift_query.fvecs", &istrm_query);
 
     const size_t gtDim = 100;
@@ -73,6 +74,7 @@ void siftTest() {
         for (size_t i = 0; i < k; i++) {
             gtKNN.insert(gt[i]);
         }
+
         IndexType::NNVector ret = index.searchKNN(query, 16);
         for (const auto & entry : ret) {
             if (gtKNN.find(entry.first) != gtKNN.end()) {

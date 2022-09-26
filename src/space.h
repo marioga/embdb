@@ -39,8 +39,10 @@ namespace hnsw {
 
         dist_t distance(const ValueType & obj1, const ValueType & obj2) const override {
             dist_t ret = 0;
+            dist_t diff;
             for (size_t i = 0; i < this->dim; i++) {
-                ret += (obj1[i] - obj2[i]) * (obj1[i] - obj2[i]);
+                diff = obj1[i] - obj2[i];
+                ret += diff * diff;
             }
             return ret;
         }
