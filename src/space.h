@@ -11,7 +11,8 @@ namespace hnsw {
 
         using ValueType = _ValueType;
 
-        /// not necessarily a true distance, e.g., can be L2 distance squared
+        // not necessarily a true distance but can be a monotonically increasing function of it,
+        // e.g., can be L2 distance squared
         virtual dist_t distance(const ValueType & obj1, const ValueType & obj2) const = 0;
     };
 

@@ -13,15 +13,17 @@
 
 namespace hnsw {
     struct HnswConfig {
-        size_t capacity = 128;
+        size_t capacity = 1024;
 
-        size_t efConstruction = 100;
+        size_t efConstruction = 128;
         size_t M_ = 16;
-        size_t M0_ = 32;
+        size_t M0_ = 2 * M_;
 
-        std::optional<std::mt19937::result_type> levelGenSeed = std::nullopt;
-        // rate of level exponential distribution; corresponds to 1/mL for mL as in the paper
-        double levelExpLambda = log(static_cast<double>(M_));
+        size_t ef = 64;
+
+        std::optional<std::mt19937::result_type> layerGenSeed = std::nullopt;
+        // rate of layer exponential distribution; corresponds to 1/mL for mL as in the paper
+        double layerExpLambda = log(static_cast<double>(M_));
 
         bool extendCandidates = false;
         bool keepPrunedConnections = false;
@@ -44,11 +46,11 @@ namespace hnsw {
             elements.reserve(capacity);
             labels.reserve(capacity);
 
-            if (config.levelGenSeed.has_value()) {
-                levelGen.seed(config.levelGenSeed.value());
+            if (config.layerGenSeed.has_value()) {
+                layerGen.seed(config.layerGenSeed.value());
             } else {
                 std::random_device rd;
-                levelGen.seed(rd());
+                layerGen.seed(rd());
             }
         }
 
@@ -67,33 +69,33 @@ namespace hnsw {
             labels.push_back(label);
             labelsInv[label] = id;
 
-            // determine level by sampling from levelExpDist
-            std::exponential_distribution<double> levelExpDist(config.levelExpLambda);
-            size_t insertLevel = static_cast<size_t>(std::floor(levelExpDist(levelGen)));
+            // determine top insertion layer by sampling from layerExpDist
+            std::exponential_distribution<double> layerExpDist(config.layerExpLambda);
+            size_t insertLayer = static_cast<size_t>(std::floor(layerExpDist(layerGen)));
 
-            const size_t prevMaxLevel = graph.maxGlobalLevel;
+            const size_t prevMaxGlobalLayer = graph.maxGlobalLayer;
             IdType currEnterPoint = graph.enterPoint;
 
-            // add node to hnsw graph (might change enterPoint/maxGlobalLevel)
-            graph.addNode(id, insertLevel);
+            // add node to hnsw graph (might modify enterPoint/maxGlobalLayer)
+            graph.addNode(id, insertLayer);
 
             if (currEnterPoint == INVALID_ID) {
                 // first point ever added; nothing left to do
                 return id;
             }
 
-            for (size_t level = prevMaxLevel; level > insertLevel; level--) {
-                NNVector found = searchLayer(value, currEnterPoint, 1, level);
+            for (size_t layer = prevMaxGlobalLayer; layer > insertLayer; layer--) {
+                NNVector found = searchLayer(value, currEnterPoint, 1, layer);
                 currEnterPoint = found.front().first;
             }
 
             std::unordered_set<IdType> enterPoints({currEnterPoint});
-            size_t level = std::min(insertLevel, prevMaxLevel);
+            size_t layer = std::min(insertLayer, prevMaxGlobalLayer);
             do {
-                NNVector candidates = searchLayer(value, enterPoints, config.efConstruction, level);
-                size_t M = (level > 0) ? config.M_ : config.M0_;
-                IdVector neighbours = selectNeighboursHeuristic(value, candidates, M, level);
-                addBidirectionalLinks(id, neighbours, M, level, value);
+                NNVector candidates = searchLayer(value, enterPoints, config.efConstruction, layer);
+                size_t M = (layer > 0) ? config.M_ : config.M0_;
+                IdVector neighbours = selectNeighboursHeuristic(value, candidates, M, layer);
+                addBidirectionalLinks(id, neighbours, M, layer, value);
 
                 // reset enterPoints to candidates
                 enterPoints.clear();
@@ -101,34 +103,27 @@ namespace hnsw {
                                std::inserter(enterPoints, enterPoints.begin()),
                                [](const auto & p) { return p.first; });
             }
-            while (level-- > 0);
+            while (layer-- > 0);
 
             return id;
         }
 
-        NNVector searchKNN(const ValueType & query, size_t k, size_t ef) const {
+        NNVector searchKNN(const ValueType & query, size_t k) const {
             IdType currEnterPoint = graph.enterPoint;
-            for (size_t level = graph.maxGlobalLevel; level > 0; level--) {
-                NNVector found = searchLayer(query, currEnterPoint, 1, level);
+            if (currEnterPoint == INVALID_ID) {
+                return NNVector();
+            }
+
+            for (size_t layer = graph.maxGlobalLayer; layer > 0; layer--) {
+                NNVector found = searchLayer(query, currEnterPoint, 1, layer);
                 currEnterPoint = found.front().first;
             }
-            NNVector found = searchLayer(query, currEnterPoint, ef);
+            NNVector found = searchLayer(query, currEnterPoint, std::max(k, config.ef));
 
             NNVector ret(std::min(k, found.size()));
             std::partial_sort_copy(found.begin(), found.end(), ret.begin(), ret.end(),
                                    maxHeapCompare);
             return ret;
-        }
-
-        IdType addDebug(const ValueType & entry, size_t level) {
-            elements.push_back(entry);
-            IdType id = size++;
-            graph.addNode(id, level);
-            return id;
-        }
-
-        void addLinkDebug(IdType src, IdType tgt, size_t level) {
-            graph.addLink(src, tgt, level);
         }
 
      protected:
@@ -342,7 +337,7 @@ namespace hnsw {
 
         HNSWGraph graph;
 
-        std::mt19937 levelGen;
+        std::mt19937 layerGen;
     };
 } // namespace  hnsw
 #endif // HNSW_H

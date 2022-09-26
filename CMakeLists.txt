@@ -12,3 +12,6 @@ target_compile_options(common INTERFACE
 
 add_executable(embdb.bin src/embdb.cpp)
 target_link_libraries(embdb.bin PRIVATE common)
+
+add_executable(sift_test.bin src/sift_test.cpp)
+target_link_libraries(sift_test.bin PRIVATE common)
