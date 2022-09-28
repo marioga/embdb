@@ -133,9 +133,11 @@ namespace hnsw {
 
             const size_t retSize = std::min(k, found.size());
             std::partial_sort(found.begin(), found.begin() + retSize, found.end(), maxHeapCompare);
+
             std::vector<std::pair<LabelType, dist_t>> ret;
             ret.reserve(retSize);
-            for (const auto & [id, dist] : found) {
+            for (size_t idx = 0; idx < retSize; idx++) {
+                const auto & [id, dist] = found[idx];
                 ret.emplace_back(labels[id], dist);
             }
             return ret;

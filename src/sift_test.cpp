@@ -35,21 +35,19 @@ void siftTest() {
     using IndexType = hnsw::HnswIndex<float, ValueType>;
 
     hnsw::HnswConfig config;
-    config.capacity = 10000;
-    // config.capacity = 1000000;
+    // config.capacity = 10000;
+    config.capacity = 1000000;
     config.ef = 128;
 
-    std::vector<ValueType> allValues;
-    {
-        std::ifstream istrm_base;
-        openBinaryFile("siftsmall/siftsmall_base.fvecs", &istrm_base);
-        // openBinaryFile("sift/sift_base.fvecs", &istrm_base);
+    std::ifstream istrm_base;
+    // openBinaryFile("siftsmall/siftsmall_base.fvecs", &istrm_base);
+    openBinaryFile("sift/sift_base.fvecs", &istrm_base);
 
-        ValueType value(dim);
-        allValues.reserve(config.capacity);
-        while (readVector(&istrm_base, dim, value)) {
-            allValues.push_back(value);
-        }
+    ValueType value(dim);
+    std::vector<ValueType> allValues;
+    allValues.reserve(config.capacity);
+    while (readVector(&istrm_base, dim, value)) {
+        allValues.push_back(value);
     }
 
     std::cout << "Building index..." << std::endl;
@@ -60,33 +58,48 @@ void siftTest() {
         index.insert(allValues[idx], idx);
         #pragma omp atomic
         ++count;
-        if (count % 5000 == 0) {
+        if (count % 50000 == 0) {
             std::cout << "Indexed " << count << " vectors" << std::endl;
         }
     }
     std::cout << "Completed index build -- size: " << index.size() << std::endl;
 
     std::ifstream istrm_gt;
-    std::ifstream istrm_query;
-    openBinaryFile("siftsmall/siftsmall_groundtruth.ivecs", &istrm_gt);
-    openBinaryFile("siftsmall/siftsmall_query.fvecs", &istrm_query);
-    // openBinaryFile("sift/sift_groundtruth.ivecs", &istrm_gt);
-    // openBinaryFile("sift/sift_query.fvecs", &istrm_query);
-
+    // openBinaryFile("siftsmall/siftsmall_groundtruth.ivecs", &istrm_gt);
+    openBinaryFile("sift/sift_groundtruth.ivecs", &istrm_gt);
     const size_t gtDim = 100;
     std::vector<int> gt(gtDim);
-    ValueType query(dim);
-    std::unordered_set<hnsw::IdType> gtKNN;
-    size_t correct = 0, total = 0;
-    while (readVector(&istrm_gt, gtDim, gt) && readVector(&istrm_query, dim, query)) {
-        gtKNN.clear();
-        for (size_t i = 0; i < k; i++) {
-            gtKNN.insert(gt[i]);
-        }
+    std::vector<std::unordered_set<int>> allGTKNN;
+    while (readVector(&istrm_gt, gtDim, gt)) {
+        allGTKNN.emplace_back(gt.begin(), gt.begin() + k);
+    }
 
-        IndexType::NNVector ret = index.searchKNN(query, 16);
+    std::ifstream istrm_query;
+    // openBinaryFile("siftsmall/siftsmall_query.fvecs", &istrm_query);
+    openBinaryFile("sift/sift_query.fvecs", &istrm_query);
+
+    ValueType query(dim);
+    std::vector<ValueType> allQueries;
+    while (readVector(&istrm_query, dim, query)) {
+        allQueries.push_back(query);
+    }
+
+    std::vector<std::vector<size_t>> rets;
+    rets.resize(allQueries.size());
+    #pragma omp parallel for
+    for (size_t idx = 0; idx < allQueries.size(); idx++) {
+        auto ret = index.searchKNN(allQueries[idx], k);
         for (const auto & entry : ret) {
-            if (gtKNN.find(entry.first) != gtKNN.end()) {
+            rets[idx].push_back(entry.first);
+        }
+    }
+
+    size_t correct = 0, total = 0;
+    for (size_t idx = 0; idx < allQueries.size(); idx++) {
+        const auto & ret = rets[idx];
+        const auto & gtKNN = allGTKNN[idx];
+        for (auto label : ret) {
+            if (gtKNN.find(label) != gtKNN.end()) {
                 correct++;
             }
         }
