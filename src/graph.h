@@ -1,6 +1,7 @@
 #ifndef GRAPH_H
 #define GRAPH_H
 
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -16,15 +17,18 @@ namespace hnsw {
     class HNSWGraph {
      public:
         HNSWGraph(const HnswConfig & config)
-            : enterPoint(INVALID_ID)
+            : adjListsMutexes(config.capacity)
+            , enterPoint(INVALID_ID)
             , maxLayer(0)
             , config(config) {
-            layerAdjacencyLists.reserve(config.capacity);
+            layerAdjLists.reserve(config.capacity);
         }
 
         void insert(size_t maxLayer) {
-            layerAdjacencyLists.emplace_back(maxLayer + 1);
-            std::vector<AdjacencyList> & adjLists = layerAdjacencyLists.back();
+            layerAdjLists.emplace_back(maxLayer + 1);
+
+            // reserve capacities for adjLists
+            std::vector<AdjacencyList> & adjLists = layerAdjLists.back();
             adjLists[0].reserve(config.M0_);
             for (size_t layer = 1; layer <= maxLayer; layer++) {
                 adjLists[layer].reserve(config.M_);
@@ -32,32 +36,31 @@ namespace hnsw {
         }
 
         void addLink(IdType src, IdType tgt, size_t layer = 0) {
-            layerAdjacencyLists[src][layer].push_back(tgt);
+            layerAdjLists[src][layer].push_back(tgt);
         }
 
         const AdjacencyList & getNeighbours(IdType id, size_t layer = 0) const {
-            return layerAdjacencyLists[id][layer];
+            return layerAdjLists[id][layer];
         }
 
         void setNeighbours(IdType src, AdjacencyList && tgts, size_t layer = 0) {
-            layerAdjacencyLists[src][layer] = std::move(tgts);
-        }
-
-        void setNeighbours(IdType src, const AdjacencyList & tgts, size_t layer = 0) {
-            layerAdjacencyLists[src][layer] = tgts;
+            layerAdjLists[src][layer] = std::move(tgts);
         }
 
         size_t size() const {
-            return layerAdjacencyLists.size();
+            return layerAdjLists.size();
         }
+
+        mutable std::vector<std::mutex> adjListsMutexes;
 
         IdType enterPoint;
         size_t maxLayer;
+        std::mutex maxLayerMutex;
 
      private:
         const HnswConfig & config;
 
-        std::vector<std::vector<AdjacencyList>> layerAdjacencyLists;
+        std::vector<std::vector<AdjacencyList>> layerAdjLists;
     };
 } // namespace  hnsw
 #endif // GRAPH_H

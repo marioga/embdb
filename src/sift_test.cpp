@@ -6,7 +6,7 @@
 void openBinaryFile(const std::string & filename, std::ifstream * istrm) {
     istrm->open(filename, std::ios::binary);
     if (!istrm->is_open()) {
-        std::cout << "failed to open " << filename << std::endl;
+        throw std::runtime_error("Failed to open " + filename);
     }
 }
 
@@ -39,23 +39,32 @@ void siftTest() {
     // config.capacity = 1000000;
     config.ef = 128;
 
-    std::cout << "Building index..." << std::endl;
-    IndexType index = IndexType(config, space);
+    std::vector<ValueType> allValues;
     {
         std::ifstream istrm_base;
         openBinaryFile("siftsmall/siftsmall_base.fvecs", &istrm_base);
         // openBinaryFile("sift/sift_base.fvecs", &istrm_base);
 
-        size_t label = 0;
         ValueType value(dim);
+        allValues.reserve(config.capacity);
         while (readVector(&istrm_base, dim, value)) {
-            index.insert(value, label++);
-            if (label % 50000 == 0) {
-                std::cout << "Added " << label << " vectors" << std::endl;
-            }
+            allValues.push_back(value);
         }
     }
-    std::cout << "Completed index build" << std::endl;
+
+    std::cout << "Building index..." << std::endl;
+    IndexType index = IndexType(config, space);
+    size_t count = 0;
+    #pragma omp parallel for
+    for (size_t idx = 0; idx < allValues.size(); idx++) {
+        index.insert(allValues[idx], idx);
+        #pragma omp atomic
+        ++count;
+        if (count % 5000 == 0) {
+            std::cout << "Indexed " << count << " vectors" << std::endl;
+        }
+    }
+    std::cout << "Completed index build -- size: " << index.size() << std::endl;
 
     std::ifstream istrm_gt;
     std::ifstream istrm_query;
