@@ -21,5 +21,5 @@ namespace hnsw {
         bool extendCandidates = false;
         bool keepPrunedConnections = false;
     };
-} // namespace  hnsw
+} // namespace hnsw
 #endif // CONFIG_H

@@ -5,14 +5,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common.h"
 #include "config.h"
 
 namespace hnsw {
-    using IdType = size_t;
-    using IdVector = std::vector<IdType>;
     using AdjacencyList = IdVector;
-
-    const IdType INVALID_ID = static_cast<IdType>(-1);
 
     class HNSWGraph {
      public:
@@ -47,10 +44,6 @@ namespace hnsw {
             layerAdjLists[src][layer] = std::move(tgts);
         }
 
-        size_t size() const {
-            return layerAdjLists.size();
-        }
-
         mutable std::vector<std::mutex> adjListsMutexes;
 
         IdType enterPoint;
@@ -62,5 +55,5 @@ namespace hnsw {
 
         std::vector<std::vector<AdjacencyList>> layerAdjLists;
     };
-} // namespace  hnsw
+} // namespace hnsw
 #endif // GRAPH_H

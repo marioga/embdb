@@ -1,7 +1,7 @@
 #include <iostream>
 #include <fstream>
 
-#include "hnsw.h"
+#include "embdb/hnsw.h"
 
 void openBinaryFile(const std::string & filename, std::ifstream * istrm) {
     istrm->open(filename, std::ios::binary);
@@ -51,7 +51,8 @@ void siftTest() {
     }
 
     std::cout << "Building index..." << std::endl;
-    IndexType index = IndexType(config, space);
+    IndexType index = IndexType(config, &space);
+    hnsw::StopWatch sw;
     size_t count = 0;
     #pragma omp parallel for
     for (size_t idx = 0; idx < allValues.size(); idx++) {
@@ -62,7 +63,8 @@ void siftTest() {
             std::cout << "Indexed " << count << " vectors" << std::endl;
         }
     }
-    std::cout << "Completed index build -- size: " << index.size() << std::endl;
+    std::cout << "Completed index build -- size: " << index.size() << " -- time elapsed: "
+        << sw.elapsed<std::chrono::seconds>() << "s" << std::endl;
 
     std::ifstream istrm_gt;
     // openBinaryFile("siftsmall/siftsmall_groundtruth.ivecs", &istrm_gt);
@@ -86,6 +88,7 @@ void siftTest() {
 
     std::vector<std::vector<size_t>> rets;
     rets.resize(allQueries.size());
+    sw.reset();
     #pragma omp parallel for
     for (size_t idx = 0; idx < allQueries.size(); idx++) {
         auto ret = index.searchKNN(allQueries[idx], k);
@@ -93,6 +96,8 @@ void siftTest() {
             rets[idx].push_back(entry.first);
         }
     }
+    std::cout << "Querying " << allQueries.size() << " items -- time elapsed: "
+        << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
 
     size_t correct = 0, total = 0;
     for (size_t idx = 0; idx < allQueries.size(); idx++) {

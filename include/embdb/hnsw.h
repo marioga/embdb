@@ -14,19 +14,18 @@
 namespace hnsw {
     template<typename dist_t, typename ValueType, typename LabelType = size_t>
     class HnswIndex {
-     public:
-        using SpaceType = MetricSpace<dist_t, ValueType>;
+     protected:
+        using SpaceType = MetricSpace<dist_t, ValueType, LabelType>;
 
         using NNPair = std::pair<IdType, dist_t>;
         using NNVector = std::vector<NNPair>;
 
-        HnswIndex(const HnswConfig & config, const SpaceType & space)
+     public:
+        HnswIndex(const HnswConfig & config, SpaceType * space)
             : config(config)
-            , space(space)
-            , capacity(config.capacity)
-            , graph(config) {
-            elements.reserve(capacity);
-            labels.reserve(capacity);
+            , graph(config)
+            , space(space) {
+            space->setCapacity(config.capacity);
 
             if (config.layerGenSeed.has_value()) {
                 layerGen.seed(config.layerGenSeed.value());
@@ -38,33 +37,28 @@ namespace hnsw {
 
         size_t size() const {
             std::unique_lock<std::mutex> insertLock(insertMutex);
-            return graph.size();
+            return space->size();
         }
 
-        IdType insert(const ValueType & value, LabelType label) {
+        void insert(const ValueType & value, LabelType label) {
             IdType id;
             size_t maxLayer;
             {
                 std::unique_lock<std::mutex> insertLock(insertMutex);
-                if (auto it = labelsInv.find(label); it != labelsInv.end()) {
+                id = space->getId(label);
+                if (id != INVALID_ID) {
                     insertLock.unlock();
                     // TODO: implement updates
                     throw std::runtime_error("Label already present");
                 }
 
-                id = graph.size();
-                if (id >= capacity) {
-                    throw std::runtime_error("Capacity reached -- index must be resized");
-                }
+                id = space->add(value, label);
 
                 // determine top insertion layer by sampling from layerExpDist
                 std::exponential_distribution<double> layerExpDist(config.layerExpLambda);
                 maxLayer = static_cast<size_t>(std::floor(layerExpDist(layerGen)));
-                graph.insert(maxLayer);
 
-                elements.push_back(value);
-                labels.push_back(label);
-                labelsInv[label] = id;
+                graph.insert(maxLayer);
             }
 
             std::unique_lock<std::mutex> maxLayerLock(graph.maxLayerMutex);
@@ -75,7 +69,7 @@ namespace hnsw {
                 // first point ever added
                 graph.enterPoint = id;
                 graph.maxLayer = maxLayer;
-                return id;
+                return;
             }
 
             if (maxLayer <= graph.maxLayer) {
@@ -114,12 +108,11 @@ namespace hnsw {
                 graph.enterPoint = id;
                 graph.maxLayer = maxLayer;
             }
-
-            return id;
         }
 
-        std::vector<std::pair<LabelType, dist_t>>
-        searchKNN(const ValueType & query, size_t k) const {
+        using NNQueryResult = std::vector<std::pair<LabelType, dist_t>>;
+
+        NNQueryResult searchKNN(const ValueType & query, size_t k) const {
             IdType currEnterPoint = graph.enterPoint;
             if (currEnterPoint == INVALID_ID) {
                 return NNVector();
@@ -134,11 +127,11 @@ namespace hnsw {
             const size_t retSize = std::min(k, found.size());
             std::partial_sort(found.begin(), found.begin() + retSize, found.end(), maxHeapCompare);
 
-            std::vector<std::pair<LabelType, dist_t>> ret;
+            NNQueryResult ret;
             ret.reserve(retSize);
             for (size_t idx = 0; idx < retSize; idx++) {
                 const auto & [id, dist] = found[idx];
-                ret.emplace_back(labels[id], dist);
+                ret.emplace_back(space->getLabel(id), dist);
             }
             return ret;
         }
@@ -159,7 +152,7 @@ namespace hnsw {
                              size_t ef, size_t layer = 0) const {
             std::unordered_set<IdType> visited({enterPoint});
 
-            NNPair entry(enterPoint, distance(query, enterPoint));
+            NNPair entry(enterPoint, space->distance(query, enterPoint));
             NNVector candidates({entry});
             NNVector found({entry});
 
@@ -175,7 +168,7 @@ namespace hnsw {
             candidates.reserve(enterPoints.size());
             found.reserve(enterPoints.size());
             for (IdType pid : enterPoints) {
-                dist_t dist = distance(query, pid);
+                dist_t dist = space->distance(query, pid);
                 candidates.emplace_back(pid, dist);
                 found.emplace_back(pid, dist);
             }
@@ -212,7 +205,7 @@ namespace hnsw {
                         continue;
                     }
 
-                    dist_t ndist = distance(query, nid);
+                    dist_t ndist = space->distance(query, nid);
                     if (ndist < fdist or found.size() < ef) {
                         candidates.emplace_back(nid, ndist);
                         std::push_heap(candidates.begin(), candidates.end(), minHeapCompare);
@@ -247,7 +240,7 @@ namespace hnsw {
                     for (IdType nid : graph.getNeighbours(c.first, layer)) {
                         if (auto it = visited.find(nid); it == visited.end()) {
                             visited.insert(nid);
-                            dist_t ndist = distance(query, nid);
+                            dist_t ndist = space->distance(query, nid);
                             candidatesMinHeap.emplace_back(nid, ndist);
                         }
                     }
@@ -276,11 +269,11 @@ namespace hnsw {
                 candidatesMinHeap.pop_back();
 
                 bool include = true;
-                const ValueType & cvalue = elements[cid];
-                // heuristic: include only points that are closer to query element
-                // than to any other previously returned elements
+                const ValueType & cvalue = space->getValue(cid);
+                // heuristic: include only points that are closer to query
+                // than to any other previously returned values
                 for (IdType rid : ret) {
-                    dist_t dist = distance(cvalue, rid);
+                    dist_t dist = space->distance(cvalue, rid);
                     if (dist < cdist) {
                         include = false;
                         break;
@@ -319,7 +312,7 @@ namespace hnsw {
                     NNVector tgtCandidates;
                     tgtCandidates.reserve(tgtNeighbours.size());
                     for (IdType nid : tgtNeighbours) {
-                        tgtCandidates.emplace_back(nid, distance(query, nid));
+                        tgtCandidates.emplace_back(nid, space->distance(query, nid));
                     }
                     IdVector newTgtNeighbours =
                         selectNeighboursHeuristic(query, tgtCandidates, M, layer);
@@ -330,32 +323,14 @@ namespace hnsw {
             graph.setNeighbours(src, std::move(tgts), layer);
         }
 
-        dist_t distance(const ValueType & query, const ValueType & elem) const {
-            return space.distance(query, elem);
-        }
-
-        dist_t distance(const ValueType & query, IdType id) const {
-            return distance(query, elements[id]);
-        }
-
-        dist_t distance(IdType id1, IdType id2) const {
-            return distance(elements[id1], elements[id2]);
-        }
-
      private:
         const HnswConfig & config;
-        const SpaceType & space;
-
-        std::vector<ValueType> elements;
-        std::vector<LabelType> labels;
-        std::unordered_map<LabelType, IdType> labelsInv;
-        mutable std::mutex insertMutex;
-
-        size_t capacity;
-
         HNSWGraph graph;
+        SpaceType * space;
+
+        mutable std::mutex insertMutex;
 
         std::mt19937 layerGen;
     };
-} // namespace  hnsw
+} // namespace hnsw
 #endif // HNSW_H
