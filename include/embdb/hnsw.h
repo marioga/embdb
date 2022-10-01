@@ -94,15 +94,24 @@ namespace hnsw {
                 IdVector neighbours = selectNeighboursHeuristic(value, candidates, M, layer,
                                                                 config.extendCandidates,
                                                                 config.keepPrunedConnections);
-                graph.addBidirectionalLinks(id, std::move(neighbours), layer, M,
-                    [&](const IdVector & prev) {
+                // add bidirectional links
+                for (IdType tgt : neighbours) {
+                    std::unique_lock<std::mutex> tgtLock(*graph.getMutex(tgt));
+                    graph.addLink(tgt, id, layer);
+                    // shrink connections if necessary
+                    const IdVector & tgtNeighbours = graph.getNeighbours(tgt, layer);
+                    if (tgtNeighbours.size() > M) {
                         NNVector candidates;
-                        candidates.reserve(prev.size());
-                        for (IdType nid : prev) {
+                        candidates.reserve(tgtNeighbours.size());
+                        for (IdType nid : tgtNeighbours) {
                             candidates.emplace_back(nid, space->distance(value, nid));
                         }
-                        return selectNeighboursHeuristic(value, candidates, M, layer);
-                    });
+                        IdVector newNeighbours =
+                            selectNeighboursHeuristic(value, candidates, M, layer);
+                        graph.setNeighbours(tgt, std::move(newNeighbours), layer);
+                    }
+                }
+                graph.setNeighbours(id, std::move(neighbours), layer);
 
                 if (layer == 0) {
                     break;

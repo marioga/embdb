@@ -55,46 +55,26 @@ namespace hnsw {
             nodes.back().reserve(config);
         }
 
-        using ShrinkFnType = std::function<IdVector(const IdVector &)>;
-
-        void addBidirectionalLinks(IdType src, IdVector && tgts, size_t layer, size_t M,
-                                   ShrinkFnType shrinkFn) {
-            for (IdType tgt : tgts) {
-                {
-                    std::unique_lock<std::mutex> tgtInLock(inMutexes[tgt]);
-                    nodes[tgt].inEdges[layer].push_back(src);
-                }
-
-                std::unique_lock<std::mutex> tgtOutLock(outMutexes[tgt]);
-                IdVector & tgtOut = nodes[tgt].outEdges[layer];
-                tgtOut.push_back(src);
-
-                if (tgtOut.size() <= M) {
-                    std::unique_lock<std::mutex> srcInLock(inMutexes[src]);
-                    nodes[src].inEdges[layer].push_back(tgt);
-                } else {
-                    // shrink connections
-                    for (IdType prev : tgtOut) {
-                        std::unique_lock<std::mutex> prevInlock(inMutexes[prev]);
-                        IdVector & ins = nodes[prev].inEdges[layer];
-                        auto it = std::find(ins.begin(), ins.end(), tgt);
-                        if (it != ins.end()) {
-                            *it = std::move(ins.back());
-                            ins.pop_back();
-                        }
-                    }
-
-                    IdVector newNeighbours = shrinkFn(tgtOut);
-
-                    for (IdType curr : newNeighbours) {
-                        std::unique_lock<std::mutex> currInLock(inMutexes[curr]);
-                        nodes[curr].inEdges[layer].push_back(tgt);
-                    }
-
-                    tgtOut = std::move(newNeighbours);
-                }
+        void addLink(IdType src, IdType tgt, size_t layer) {
+            {
+                std::unique_lock<std::mutex> tgtInLock(inMutexes[tgt]);
+                nodes[tgt].inEdges[layer].push_back(src);
             }
+            nodes[src].outEdges[layer].push_back(tgt);
+        }
 
+        void setNeighbours(IdType src, IdVector && tgts, size_t layer) {
+            for (IdType prevTgt : nodes[src].outEdges[layer]) {
+                std::unique_lock<std::mutex> prevInlock(inMutexes[prevTgt]);
+                IdVector & prevIns = nodes[prevTgt].inEdges[layer];
+                auto it = std::find(prevIns.begin(), prevIns.end(), src);
+                *it = std::move(prevIns.back());
+                prevIns.pop_back();
+            }
+            for (IdType tgt : tgts) {
+                std::unique_lock<std::mutex> currInLock(inMutexes[tgt]);
+                nodes[tgt].inEdges[layer].push_back(src);
+            }
             nodes[src].outEdges[layer] = std::move(tgts);
         }
 
