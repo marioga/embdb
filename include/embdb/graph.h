@@ -9,51 +9,164 @@
 #include "config.h"
 
 namespace hnsw {
-    using AdjacencyList = IdVector;
+    struct Node {
+        Node(IdType id = INVALID_ID, size_t maxLayer = 0)
+            : id(id)
+           , maxLayer(maxLayer) {}
+
+        IdType id;
+        size_t maxLayer;
+
+        // edges per level
+        std::vector<IdVector> outEdges;
+        std::vector<IdVector> inEdges;
+
+        void reserve(const HnswConfig & config) {
+            // make sure we hold levels 0, ..., maxLayer
+            outEdges.resize(maxLayer + 1);
+            inEdges.resize(maxLayer + 1);
+            outEdges[0].reserve(config.M0_ + 1);
+            inEdges[0].reserve(config.M0_ + 1);
+            for (size_t layer = 1; layer <= maxLayer; layer++) {
+                outEdges[layer].reserve(config.M_ + 1);
+                inEdges[layer].reserve(config.M_ + 1);
+            }
+        }
+    };
 
     class HNSWGraph {
      public:
         HNSWGraph(const HnswConfig & config)
-            : adjListsMutexes(config.capacity)
-            , enterPoint(INVALID_ID)
+            : enterPoint(INVALID_ID)
             , maxLayer(0)
-            , config(config) {
-            layerAdjLists.reserve(config.capacity);
+            , config(config)
+            , inMutexes(config.capacity)
+            , outMutexes(config.capacity) {
+            nodes.reserve(config.capacity);
         }
 
-        void insert(size_t maxLayer) {
-            layerAdjLists.emplace_back(maxLayer + 1);
+        const IdVector & getNeighbours(IdType src, size_t layer) const {
+            return nodes[src].outEdges[layer];
+        }
 
-            // reserve capacities for adjLists
-            std::vector<AdjacencyList> & adjLists = layerAdjLists.back();
-            adjLists[0].reserve(config.M0_);
-            for (size_t layer = 1; layer <= maxLayer; layer++) {
-                adjLists[layer].reserve(config.M_);
+        void addNode(size_t maxLayer) {
+            nodes.emplace_back(nodes.size(), maxLayer);
+            // reserve capacities for node
+            nodes.back().reserve(config);
+        }
+
+        using ShrinkFnType = std::function<IdVector(const IdVector &)>;
+
+        void addBidirectionalLinks(IdType src, IdVector && tgts, size_t layer, size_t M,
+                                   ShrinkFnType shrinkFn) {
+            for (IdType tgt : tgts) {
+                {
+                    std::unique_lock<std::mutex> tgtInLock(inMutexes[tgt]);
+                    nodes[tgt].inEdges[layer].push_back(src);
+                }
+
+                std::unique_lock<std::mutex> tgtOutLock(outMutexes[tgt]);
+                IdVector & tgtOut = nodes[tgt].outEdges[layer];
+                tgtOut.push_back(src);
+
+                if (tgtOut.size() <= M) {
+                    std::unique_lock<std::mutex> srcInLock(inMutexes[src]);
+                    nodes[src].inEdges[layer].push_back(tgt);
+                } else {
+                    // shrink connections
+                    for (IdType prev : tgtOut) {
+                        std::unique_lock<std::mutex> prevInlock(inMutexes[prev]);
+                        IdVector & ins = nodes[prev].inEdges[layer];
+                        auto it = std::find(ins.begin(), ins.end(), tgt);
+                        if (it != ins.end()) {
+                            *it = std::move(ins.back());
+                            ins.pop_back();
+                        }
+                    }
+
+                    IdVector newNeighbours = shrinkFn(tgtOut);
+
+                    for (IdType curr : newNeighbours) {
+                        std::unique_lock<std::mutex> currInLock(inMutexes[curr]);
+                        nodes[curr].inEdges[layer].push_back(tgt);
+                    }
+
+                    tgtOut = std::move(newNeighbours);
+                }
+            }
+
+            nodes[src].outEdges[layer] = std::move(tgts);
+        }
+
+        void checkIntegrity() const {
+            // not thread-safe with inserting/modifying
+            IdType size = nodes.size();
+            if (size >= 1UL << 32) {
+                throw std::runtime_error("Index is too large; cannot check integrity");
+            }
+
+            std::vector<std::unordered_map<size_t, uint8_t>> edges(maxLayer + 1);
+            for (size_t id = 0; id < size; id++) {
+                const Node & node = nodes.at(id);
+                if (node.id != id) {
+                    throw std::runtime_error("Invalid id: " + std::to_string(id));
+                }
+                for (size_t layer = 0; layer <= node.maxLayer; layer++) {
+                    if (node.outEdges[layer].size() > ((layer > 0) ? config.M_ : config.M0_)) {
+                        throw std::runtime_error("Invalid out size: " + std::to_string(node.id) +
+                                                 " in layer: " + std::to_string(layer));
+                    }
+                    for (const IdType tgt : node.outEdges[layer]) {
+                        if (nodes[tgt].maxLayer < layer) {
+                            throw std::runtime_error("Unexpected node: " + std::to_string(tgt) +
+                                                     " in layer: " + std::to_string(layer));
+                        }
+                        edges[layer][(node.id << 32) | tgt] |= 1;
+                    }
+
+                    for (const IdType src : node.inEdges[layer]) {
+                        if (nodes[src].maxLayer < layer) {
+                            throw std::runtime_error("Unexpected node: " + std::to_string(src) +
+                                                     " in layer: " + std::to_string(layer));
+                        }
+                        edges[layer][(src << 32) | node.id] |= 2;
+                    }
+                }
+            }
+
+            for (size_t layer = 0; layer < edges.size(); layer++) {
+                const auto & layerEdges = edges[layer];
+                for (const auto & [key, flag] : layerEdges) {
+                    IdType tgt = key & ((1UL << 32) - 1);
+                    IdType src = key >> 32;
+                    if (flag != 3) {
+                        throw std::runtime_error("Incomplete edge: " + std::to_string(src) +
+                                                 " -> " + std::to_string(tgt) + " in layer: " +
+                                                 std::to_string(layer));
+                    }
+                }
             }
         }
 
-        void addLink(IdType src, IdType tgt, size_t layer = 0) {
-            layerAdjLists[src][layer].push_back(tgt);
+        std::mutex * getMutex(IdType id) const {
+            return &outMutexes[id];
         }
 
-        const AdjacencyList & getNeighbours(IdType id, size_t layer = 0) const {
-            return layerAdjLists[id][layer];
+        std::mutex * getMaxLayerMutex() const {
+            return &maxLayerMutex;
         }
-
-        void setNeighbours(IdType src, AdjacencyList && tgts, size_t layer = 0) {
-            layerAdjLists[src][layer] = std::move(tgts);
-        }
-
-        mutable std::vector<std::mutex> adjListsMutexes;
 
         IdType enterPoint;
         size_t maxLayer;
-        std::mutex maxLayerMutex;
 
      private:
         const HnswConfig & config;
 
-        std::vector<std::vector<AdjacencyList>> layerAdjLists;
+        std::vector<Node> nodes;
+
+        mutable std::mutex maxLayerMutex;
+        mutable std::vector<std::mutex> inMutexes;
+        mutable std::vector<std::mutex> outMutexes;
     };
 } // namespace hnsw
 #endif // GRAPH_H

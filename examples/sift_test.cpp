@@ -54,13 +54,15 @@ void siftTest() {
     IndexType index = IndexType(config, &space);
     hnsw::StopWatch sw;
     size_t count = 0;
+    const size_t logEvery = config.capacity / 10;
     #pragma omp parallel for
     for (size_t idx = 0; idx < allValues.size(); idx++) {
         index.insert(allValues[idx], idx);
         #pragma omp atomic
         ++count;
-        if (count % 50000 == 0) {
-            std::cout << "Indexed " << count << " vectors" << std::endl;
+        if (count % logEvery == 0) {
+            std::cout << "Indexed " << count << " vectors -- time elapsed: "
+                << sw.elapsed<std::chrono::seconds>() << "s" << std::endl;
         }
     }
     std::cout << "Completed index build -- size: " << index.size() << " -- time elapsed: "
@@ -112,6 +114,7 @@ void siftTest() {
     }
 
     std::cout << "Recall: " << (100.0f * correct) / total << "%" << std::endl;
+    index.checkIntegrity();
 }
 
 int main() {

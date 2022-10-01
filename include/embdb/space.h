@@ -61,6 +61,20 @@ namespace hnsw {
             return id;
         }
 
+        virtual void remove(IdType id) {
+            LabelType label = labels[id];
+
+            // swap with last element
+            labelsInv[labels.back()] = id;
+            labels[id] = std::move(labels.back());
+            elements[id] = std::move(elements.back());
+
+            // remove last element
+            labelsInv.erase(label);
+            labels.pop_back();
+            elements.pop_back();
+        }
+
      protected:
         std::vector<LabelType> labels;
         std::unordered_map<LabelType, IdType> labelsInv;

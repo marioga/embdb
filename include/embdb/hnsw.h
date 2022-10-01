@@ -40,6 +40,10 @@ namespace hnsw {
             return space->size();
         }
 
+        void checkIntegrity() const {
+            graph.checkIntegrity();
+        }
+
         void insert(const ValueType & value, LabelType label) {
             IdType id;
             size_t maxLayer;
@@ -58,11 +62,11 @@ namespace hnsw {
                 std::exponential_distribution<double> layerExpDist(config.layerExpLambda);
                 maxLayer = static_cast<size_t>(std::floor(layerExpDist(layerGen)));
 
-                graph.insert(maxLayer);
+                graph.addNode(maxLayer);
             }
 
-            std::unique_lock<std::mutex> maxLayerLock(graph.maxLayerMutex);
-            std::unique_lock<std::mutex> idLock(graph.adjListsMutexes[id]);
+            std::unique_lock<std::mutex> maxLayerLock(*graph.getMaxLayerMutex());
+            std::unique_lock<std::mutex> idLock(*graph.getMutex(id));
 
             IdType currEnterPoint = graph.enterPoint;
             if (currEnterPoint == INVALID_ID) {
@@ -90,7 +94,15 @@ namespace hnsw {
                 IdVector neighbours = selectNeighboursHeuristic(value, candidates, M, layer,
                                                                 config.extendCandidates,
                                                                 config.keepPrunedConnections);
-                addBidirectionalLinks(id, std::move(neighbours), M, layer, value);
+                graph.addBidirectionalLinks(id, std::move(neighbours), layer, M,
+                    [&](const IdVector & prev) {
+                        NNVector candidates;
+                        candidates.reserve(prev.size());
+                        for (IdType nid : prev) {
+                            candidates.emplace_back(nid, space->distance(value, nid));
+                        }
+                        return selectNeighboursHeuristic(value, candidates, M, layer);
+                    });
 
                 if (layer == 0) {
                     break;
@@ -110,12 +122,26 @@ namespace hnsw {
             }
         }
 
+        bool remove(LabelType label) {
+            std::unique_lock<std::mutex> insertLock(insertMutex);
+            IdType id = space->getId(label);
+            if (id == INVALID_ID) {
+                // label not found
+                return false;
+            }
+
+            std::unique_lock<std::mutex> maxLayerLock(graph.getMaxLayerMutex());
+
+            space->remove(label);
+            return true;
+        }
+
         using NNQueryResult = std::vector<std::pair<LabelType, dist_t>>;
 
         NNQueryResult searchKNN(const ValueType & query, size_t k) const {
             IdType currEnterPoint = graph.enterPoint;
             if (currEnterPoint == INVALID_ID) {
-                return NNVector();
+                return NNQueryResult();
             }
 
             for (size_t layer = graph.maxLayer; layer > 0; layer--) {
@@ -197,7 +223,7 @@ namespace hnsw {
                 std::pop_heap(candidates.begin(), candidates.end(), minHeapCompare);
                 candidates.pop_back();
 
-                std::unique_lock<std::mutex> cLock(graph.adjListsMutexes[cid]);
+                std::unique_lock<std::mutex> cidLock(*graph.getMutex(cid));
                 for (IdType nid : graph.getNeighbours(cid, layer)) {
                     auto it = visited.insert(nid);
                     if (!it.second) {
@@ -236,7 +262,7 @@ namespace hnsw {
                                [](const auto & p) { return p.first; });
 
                 for (const NNPair & c : candidates) {
-                    std::unique_lock<std::mutex> cLock(graph.adjListsMutexes[c.first]);
+                    std::unique_lock<std::mutex> cidLock(*graph.getMutex(c.first));
                     for (IdType nid : graph.getNeighbours(c.first, layer)) {
                         if (auto it = visited.find(nid); it == visited.end()) {
                             visited.insert(nid);
@@ -298,29 +324,6 @@ namespace hnsw {
             }
 
             return ret;
-        }
-
-        void addBidirectionalLinks(IdType src, IdVector && tgts, size_t M, size_t layer,
-                                   const ValueType & query) {
-            for (IdType tgt : tgts) {
-                std::unique_lock<std::mutex> tgtLock(graph.adjListsMutexes[tgt]);
-                graph.addLink(tgt, src, layer);
-
-                // shrink connections if necessary
-                const AdjacencyList & tgtNeighbours = graph.getNeighbours(tgt, layer);
-                if (tgtNeighbours.size() > M) {
-                    NNVector tgtCandidates;
-                    tgtCandidates.reserve(tgtNeighbours.size());
-                    for (IdType nid : tgtNeighbours) {
-                        tgtCandidates.emplace_back(nid, space->distance(query, nid));
-                    }
-                    IdVector newTgtNeighbours =
-                        selectNeighboursHeuristic(query, tgtCandidates, M, layer);
-                    graph.setNeighbours(tgt, std::move(newTgtNeighbours), layer);
-                }
-            }
-
-            graph.setNeighbours(src, std::move(tgts), layer);
         }
 
      private:

@@ -44,4 +44,5 @@ int main() {
     }
 
     std::cout << "Total time elapsed: " << sw.elapsed() << "μs" << std::endl;
+    index.checkIntegrity();
 }
