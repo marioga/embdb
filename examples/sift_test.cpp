@@ -27,7 +27,7 @@ bool readVector(std::ifstream * istrm, int expectedDim, std::vector<T> & vec) {
 
 void siftTest() {
     const int dim = 128;
-    const int k = 16;
+    const size_t k = 16;
     using _L2Space = hnsw::L2Space<float>;
     _L2Space space = _L2Space(dim);
 
