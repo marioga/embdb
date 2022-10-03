@@ -15,7 +15,7 @@ int main() {
     IntegerSpace space;
 
     hnsw::HnswConfig config;
-    config.capacity = 1000000;
+    config.capacity = 10000000;
     config.efConstruction = 64;
     config.ef = 64;
 
@@ -39,7 +39,7 @@ int main() {
     std::cout << "Completed index build -- size: " << index.size() << " -- time elapsed: "
         << sw.elapsed<std::chrono::seconds>() << "s" << std::endl;
 
-    const std::vector<int> queries{10, -10, 7000, 700001, 7000000};
+    const std::vector<int> queries{101, -333, 7011, 703071, 7040440, 12345678};
 
     for (int query : queries) {
         auto ret = index.searchKNN(query, k);
