@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <functional>
 #include <mutex>
+#include <shared_mutex>
 #include <random>
 #include <unordered_set>
 #include <vector>
@@ -36,7 +37,7 @@ namespace hnsw {
         }
 
         size_t size() const {
-            std::unique_lock<std::mutex> insertLock(insertMutex);
+            std::unique_lock insertLock(insertMutex);
             return space->size();
         }
 
@@ -48,7 +49,7 @@ namespace hnsw {
             IdType id;
             size_t maxLayer;
             {
-                std::unique_lock<std::mutex> insertLock(insertMutex);
+                std::unique_lock insertLock(insertMutex);
                 id = space->getId(label);
                 if (id != INVALID_ID) {
                     insertLock.unlock();
@@ -62,11 +63,12 @@ namespace hnsw {
                 std::exponential_distribution<double> layerExpDist(config.layerExpLambda);
                 maxLayer = static_cast<size_t>(std::floor(layerExpDist(layerGen)));
 
-                graph.addNode(maxLayer);
+                graph.addNode(id, maxLayer);
             }
 
-            std::unique_lock<std::mutex> maxLayerLock(*graph.getMaxLayerMutex());
-            std::unique_lock<std::mutex> idLock(*graph.getMutex(id));
+            std::shared_lock sharedLock(deleteMutex);
+            std::unique_lock idLock(*graph.getMutex(id));
+            std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
 
             IdType currEnterPoint = graph.enterPoint;
             if (currEnterPoint == INVALID_ID) {
@@ -90,13 +92,13 @@ namespace hnsw {
             std::unordered_set<IdType> enterPoints({currEnterPoint});
             while (true) {
                 NNVector candidates = searchLayer(value, enterPoints, config.efConstruction, layer);
-                size_t M = (layer > 0) ? config.M_ : config.M0_;
+                const size_t M = (layer > 0) ? config.M_ : config.M0_;
                 IdVector neighbours = selectNeighboursHeuristic(value, candidates, M, layer,
                                                                 config.extendCandidates,
                                                                 config.keepPrunedConnections);
                 // add bidirectional links
                 for (IdType tgt : neighbours) {
-                    std::unique_lock<std::mutex> tgtLock(*graph.getMutex(tgt));
+                    std::unique_lock tgtLock(*graph.getMutex(tgt));
                     graph.addLink(tgt, id, layer);
                     // shrink connections if necessary
                     const IdVector & tgtNeighbours = graph.getNeighbours(tgt, layer);
@@ -132,16 +134,94 @@ namespace hnsw {
         }
 
         bool remove(LabelType label) {
-            std::unique_lock<std::mutex> insertLock(insertMutex);
-            IdType id = space->getId(label);
-            if (id == INVALID_ID) {
-                // label not found
-                return false;
+            IdType id;
+            {
+                std::unique_lock deleteLock(deleteMutex);
+                {
+                    std::unique_lock insertLock(insertMutex);
+                    id = space->getId(label);
+                    if (id == INVALID_ID) {
+                        // label not found
+                        return false;
+                    }
+
+                    // makes node unreachable but does not delete its outlinks
+                    graph.remove(id);
+                }
+
+                std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
+                if (graph.enterPoint == id) {
+                    graph.findNewEnterPoint();
+                }
             }
 
-            std::unique_lock<std::mutex> maxLayerLock(graph.getMaxLayerMutex());
+            {
+                std::shared_lock deleteLock(deleteMutex);
+                std::unique_lock idLock(*graph.getMutex(id));
 
-            space->remove(label);
+                for (size_t layer = 0; layer <= graph.getMaxLayer(id); layer++) {
+                    const size_t M = (layer > 0) ? config.M_ : config.M0_;
+                    IdVector neighbours;
+                    neighbours.reserve(M);
+                    for (IdType nid : graph.getNeighbours(id, layer)) {
+                        // some neighbours might have been deleted by another thread
+                        if (!graph.isDeleted(nid)) {
+                            neighbours.push_back(nid);
+                        }
+                    }
+
+                    std::unordered_set<IdType> candidateSet;
+                    for (IdType nid : neighbours) {
+                        candidateSet.insert(nid);
+                        std::unique_lock nidLock(*graph.getMutex(nid));
+                        for (IdType nnid : graph.getNeighbours(nid, layer)) {
+                            candidateSet.insert(nnid);
+                        }
+                    }
+
+                    NNVector candidates;
+                    candidates.reserve(config.efConstruction);
+                    for (IdType nid : neighbours) {
+                        const ValueType & nvalue = space->getValue(nid);
+                        for (IdType cid : candidateSet) {
+                            if (cid == nid) {
+                                continue;
+                            }
+
+                            dist_t dist = space->distance(nvalue, cid);
+                            if (candidates.size() < config.efConstruction) {
+                                candidates.emplace_back(cid, dist);
+                                if (candidates.size() == config.efConstruction) {
+                                    std::make_heap(candidates.begin(), candidates.end(),
+                                                maxHeapCompare);
+                                }
+                            } else if (dist < candidates.front().second) {
+                                std::pop_heap(candidates.begin(), candidates.end(),
+                                                maxHeapCompare);
+                                candidates.back() = std::make_pair(cid, dist);
+                                std::push_heap(candidates.begin(), candidates.end(),
+                                                maxHeapCompare);
+                            }
+                        }
+
+                        IdVector newNeighbours =
+                            selectNeighboursHeuristic(nvalue, candidates, M, layer);
+
+                        {
+                            std::unique_lock nidLock(*graph.getMutex(nid));
+                            graph.setNeighbours(nid, std::move(newNeighbours), layer);
+                        }
+                        // reset candidates
+                        candidates.clear();
+                    }
+                }
+            }
+
+            {
+                std::unique_lock insertLock(insertMutex);
+                space->remove(id);
+            }
+
             return true;
         }
 
@@ -207,6 +287,8 @@ namespace hnsw {
                 candidates.emplace_back(pid, dist);
                 found.emplace_back(pid, dist);
             }
+            std::make_heap(candidates.begin(), candidates.end(), minHeapCompare);
+            std::make_heap(found.begin(), found.end(), maxHeapCompare);
 
             return searchLayerImpl(query, candidates, found, visited, ef, layer);
         }
@@ -215,9 +297,7 @@ namespace hnsw {
         NNVector searchLayerImpl(const ValueType & query, NNVector & candidates,
                                  NNVector & found, std::unordered_set<IdType> & visited,
                                  size_t ef, size_t layer = 0) const {
-            std::make_heap(candidates.begin(), candidates.end(), minHeapCompare);
-            std::make_heap(found.begin(), found.end(), maxHeapCompare);
-
+            // Assumes candidates (resp. found) is a min (resp. max) heap
             while (!candidates.empty()) {
                 // closest candidate to query
                 auto [cid, cdist] = candidates.front();
@@ -232,7 +312,7 @@ namespace hnsw {
                 std::pop_heap(candidates.begin(), candidates.end(), minHeapCompare);
                 candidates.pop_back();
 
-                std::unique_lock<std::mutex> cidLock(*graph.getMutex(cid));
+                std::unique_lock cidLock(*graph.getMutex(cid));
                 for (IdType nid : graph.getNeighbours(cid, layer)) {
                     auto it = visited.insert(nid);
                     if (!it.second) {
@@ -271,7 +351,7 @@ namespace hnsw {
                                [](const auto & p) { return p.first; });
 
                 for (const NNPair & c : candidates) {
-                    std::unique_lock<std::mutex> cidLock(*graph.getMutex(c.first));
+                    std::unique_lock cidLock(*graph.getMutex(c.first));
                     for (IdType nid : graph.getNeighbours(c.first, layer)) {
                         if (auto it = visited.find(nid); it == visited.end()) {
                             visited.insert(nid);
@@ -341,6 +421,7 @@ namespace hnsw {
         SpaceType * space;
 
         mutable std::mutex insertMutex;
+        mutable std::shared_mutex deleteMutex;
 
         std::mt19937 layerGen;
     };

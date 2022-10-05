@@ -10,40 +10,77 @@ class IntegerSpace : public hnsw::MetricSpace<int, int> {
 };
 
 int main() {
-    const size_t k = 4;
+    const size_t k = 5;
 
     IntegerSpace space;
 
     hnsw::HnswConfig config;
-    config.capacity = 10000000;
+    config.capacity = 1000000;
     config.efConstruction = 64;
     config.ef = 64;
 
     using IndexType = hnsw::HnswIndex<int, int>;
 
+    const size_t logEvery = config.capacity / 10;
+
     std::cout << "Building index..." << std::endl;
     IndexType index = IndexType(config, &space);
-    hnsw::StopWatch sw;
     size_t count = 0;
-    const size_t logEvery = config.capacity / 10;
+    hnsw::StopWatch sw;
     #pragma omp parallel for
-    for (size_t idx = 0; idx < config.capacity; idx++) {
+    for (size_t idx = 0; idx < config.capacity / 2; idx++) {
         index.insert(static_cast<int>(idx), idx);
         #pragma omp atomic
         ++count;
         if (count % logEvery == 0) {
             std::cout << "Indexed " << count << " integers -- time elapsed: "
-                << sw.elapsed<std::chrono::seconds>() << "s" << std::endl;
+                << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
         }
     }
-    std::cout << "Completed index build -- size: " << index.size() << " -- time elapsed: "
-        << sw.elapsed<std::chrono::seconds>() << "s" << std::endl;
+    std::cout << "Completed index build (first half) -- size: " << index.size()
+        << " -- time elapsed: " << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
 
-    const std::vector<int> queries{101, -333, 7011, 703071, 7040440, 12345678};
+    index.checkIntegrity();
+
+    std::cout << "Removing even labels..." << std::endl;
+    count = 0;
+    sw.reset();
+    #pragma omp parallel for
+    for (size_t idx = 0; idx < config.capacity / 2; idx += 2) {
+        index.remove(idx);
+        #pragma omp atomic
+        ++count;
+        if (count % logEvery == 0) {
+            std::cout << "Removed " << count << " integers -- time elapsed: "
+                << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
+        }
+    }
+    std::cout << "Completed removal -- size: " << index.size()
+        << " -- time elapsed: " << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
+
+    count = 0;
+    sw.reset();
+    #pragma omp parallel for
+    for (size_t idx = config.capacity / 2; idx < config.capacity; idx++) {
+        index.insert(static_cast<int>(idx), idx);
+        #pragma omp atomic
+        ++count;
+        if (count % logEvery == 0) {
+            std::cout << "Inserted " << count << " integers -- time elapsed: "
+                << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
+        }
+    }
+    std::cout << "Completed index build (first half) -- size: " << index.size()
+        << " -- time elapsed: " << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
+
+    index.checkIntegrity();
+
+    const int midPoint = static_cast<int>(config.capacity / 2);
+    const std::vector<int> queries{101, -333, midPoint, 703071, 3040446, 7345678};
 
     for (int query : queries) {
         auto ret = index.searchKNN(query, k);
-        std::cout << "Querying for " << query << std::endl;
+        std::cout << "Querying for label: " << query << std::endl;
         for (size_t i = 0; i < k; i++) {
             auto [label, dist] = ret[i];
             std::cout << "Rank: " << i << " -- label: " << label

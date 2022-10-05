@@ -1,6 +1,7 @@
 #ifndef SPACE_H
 #define SPACE_H
 
+#include <queue>
 #include <vector>
 
 #include "common.h"
@@ -9,6 +10,10 @@ namespace hnsw {
     template<typename dist_t, typename _ValueType, typename LabelType = size_t>
     class MetricSpace {
      public:
+        MetricSpace()
+            : capacity_(0)
+            , size_(0) {}
+
         virtual ~MetricSpace() = default;
 
         using ValueType = _ValueType;
@@ -28,11 +33,11 @@ namespace hnsw {
         void setCapacity(size_t capacity) {
             labels.reserve(capacity);
             elements.reserve(capacity);
-            this->capacity = capacity;
+            capacity_ = capacity;
         }
 
         size_t size() const {
-            return labels.size();
+            return size_;
         }
 
         ValueType getValue(IdType id) const {
@@ -49,30 +54,32 @@ namespace hnsw {
         }
 
         virtual IdType add(const ValueType & value, LabelType label) {
-            IdType id = size();
-            if (id >= capacity) {
+            if (size_ >= capacity_) {
                 throw std::runtime_error("Capacity reached -- index must be resized");
             }
 
-            elements.push_back(value);
-            labels.push_back(label);
+            IdType id;
+            if (!deleted.empty()) {
+                id = deleted.front();
+                deleted.pop();
+                labels[id] = label;
+                elements[id] = value;
+            } else {
+                id = size_;
+                labels.push_back(label);
+                elements.push_back(value);
+            }
+
             labelsInv[label] = id;
+            size_++;
 
             return id;
         }
 
         virtual void remove(IdType id) {
-            LabelType label = labels[id];
-
-            // swap with last element
-            labelsInv[labels.back()] = id;
-            labels[id] = std::move(labels.back());
-            elements[id] = std::move(elements.back());
-
-            // remove last element
-            labelsInv.erase(label);
-            labels.pop_back();
-            elements.pop_back();
+            labelsInv.erase(labels[id]);
+            deleted.push(id);
+            size_--;
         }
 
      protected:
@@ -80,7 +87,10 @@ namespace hnsw {
         std::unordered_map<LabelType, IdType> labelsInv;
         std::vector<ValueType> elements;
 
-        size_t capacity;
+        std::queue<IdType> deleted;
+
+        size_t capacity_;
+        size_t size_;
     };
 
     template<typename dist_t = float, typename entry_t = dist_t, typename LabelType = size_t>

@@ -12,10 +12,12 @@ namespace hnsw {
     struct Node {
         Node(IdType id = INVALID_ID, size_t maxLayer = 0)
             : id(id)
-           , maxLayer(maxLayer) {}
+            , maxLayer(maxLayer)
+            , deleted(false) {}
 
         IdType id;
         size_t maxLayer;
+        bool deleted;
 
         // edges per level
         std::vector<IdVector> outEdges;
@@ -26,10 +28,24 @@ namespace hnsw {
             outEdges.resize(maxLayer + 1);
             inEdges.resize(maxLayer + 1);
             outEdges[0].reserve(config.M0_ + 1);
-            inEdges[0].reserve(config.M0_ + 1);
+            inEdges[0].reserve(2 * config.M0_);
             for (size_t layer = 1; layer <= maxLayer; layer++) {
                 outEdges[layer].reserve(config.M_ + 1);
-                inEdges[layer].reserve(config.M_ + 1);
+                inEdges[layer].reserve(2 * config.M_);
+            }
+        }
+
+        void reset(size_t maxLayer, const HnswConfig & config) {
+            this->deleted = false;
+            this->maxLayer = maxLayer;
+
+            reserve(config);
+
+            for (auto & edges : outEdges) {
+                edges.clear();
+            }
+            for (auto & edges : inEdges) {
+                edges.clear();
             }
         }
     };
@@ -49,15 +65,30 @@ namespace hnsw {
             return nodes[src].outEdges[layer];
         }
 
-        void addNode(size_t maxLayer) {
-            nodes.emplace_back(nodes.size(), maxLayer);
-            // reserve capacities for node
-            nodes.back().reserve(config);
+        size_t getMaxLayer(IdType id) const {
+            return nodes[id].maxLayer;
+        }
+
+        bool isDeleted(IdType id) const {
+            return nodes[id].deleted;
+        }
+
+        void addNode(IdType id, size_t maxLayer) {
+            if (id == nodes.size()) {
+                nodes.emplace_back(nodes.size(), maxLayer);
+                // reserve capacities for node
+                nodes.back().reserve(config);
+            } else {
+                if (!nodes[id].deleted) {
+                    throw std::runtime_error("Corrupt index: overwriting active node.");
+                }
+                nodes[id].reset(maxLayer, config);
+            }
         }
 
         void addLink(IdType src, IdType tgt, size_t layer) {
             {
-                std::unique_lock<std::mutex> tgtInLock(inMutexes[tgt]);
+                std::unique_lock tgtInLock(inMutexes[tgt]);
                 nodes[tgt].inEdges[layer].push_back(src);
             }
             nodes[src].outEdges[layer].push_back(tgt);
@@ -65,17 +96,59 @@ namespace hnsw {
 
         void setNeighbours(IdType src, IdVector && tgts, size_t layer) {
             for (IdType prevTgt : nodes[src].outEdges[layer]) {
-                std::unique_lock<std::mutex> prevInlock(inMutexes[prevTgt]);
+                std::unique_lock lock(inMutexes[prevTgt]);
                 IdVector & prevIns = nodes[prevTgt].inEdges[layer];
                 auto it = std::find(prevIns.begin(), prevIns.end(), src);
                 *it = std::move(prevIns.back());
                 prevIns.pop_back();
             }
             for (IdType tgt : tgts) {
-                std::unique_lock<std::mutex> currInLock(inMutexes[tgt]);
+                std::unique_lock currInLock(inMutexes[tgt]);
                 nodes[tgt].inEdges[layer].push_back(src);
             }
             nodes[src].outEdges[layer] = std::move(tgts);
+        }
+
+        void remove(IdType id) {
+            Node & node = nodes[id];
+            for (size_t layer = 0; layer <= node.maxLayer; layer++) {
+                for (IdType src : node.inEdges[layer]) {
+                    std::unique_lock lock(outMutexes[src]);
+                    IdVector & srcOuts = nodes[src].outEdges[layer];
+                    auto it = std::find(srcOuts.begin(), srcOuts.end(), id);
+                    *it = std::move(srcOuts.back());
+                    srcOuts.pop_back();
+                }
+
+                for (IdType tgt : node.outEdges[layer]) {
+                    std::unique_lock lock(inMutexes[tgt]);
+                    IdVector & tgtIns = nodes[tgt].inEdges[layer];
+                    auto it = std::find(tgtIns.begin(), tgtIns.end(), id);
+                    *it = std::move(tgtIns.back());
+                    tgtIns.pop_back();
+                }
+            }
+            node.deleted = true;
+        }
+
+        void findNewEnterPoint() {
+            // TODO: Is this good enough?
+            IdType oldEnterPoint = enterPoint;
+            enterPoint = INVALID_ID;
+            maxLayer = 0;
+            size_t maxOuts = 0;
+            for (const Node & node : nodes) {
+                if (node.id == oldEnterPoint || node.deleted) {
+                    continue;
+                }
+
+                if (enterPoint == INVALID_ID || maxLayer < node.maxLayer ||
+                    (maxLayer == node.maxLayer && maxOuts < node.outEdges[maxLayer].size())) {
+                    enterPoint = node.id;
+                    maxLayer = node.maxLayer;
+                    maxOuts = node.outEdges[maxLayer].size();
+                }
+            }
         }
 
         void checkIntegrity() const {
@@ -88,9 +161,14 @@ namespace hnsw {
             std::vector<std::unordered_map<size_t, uint8_t>> edges(maxLayer + 1);
             for (size_t id = 0; id < size; id++) {
                 const Node & node = nodes.at(id);
+                if (node.deleted) {
+                    continue;
+                }
+
                 if (node.id != id) {
                     throw std::runtime_error("Invalid id: " + std::to_string(id));
                 }
+
                 for (size_t layer = 0; layer <= node.maxLayer; layer++) {
                     if (node.outEdges[layer].size() > ((layer > 0) ? config.M_ : config.M0_)) {
                         throw std::runtime_error("Invalid out size: " + std::to_string(node.id) +
