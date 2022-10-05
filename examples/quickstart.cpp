@@ -30,10 +30,10 @@ int main() {
     }
     std::cout << std::endl;
 
-    std::cout << "Three closest items:" <<std::endl;
+    std::cout << "Three closest items: " <<std::endl;
     auto ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        std::cout << "Label: " << label << " -- distance to query:"
+        std::cout << "Label: " << label << " -- distance to query: "
             << dist << std::endl;
     }
     std::cout << std::endl;
@@ -46,15 +46,16 @@ int main() {
 
     index.checkIntegrity();
 
-    std::cout << "Three closest items after deletion:" <<std::endl;
+    std::cout << "Three closest items after deletion: " <<std::endl;
     ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        std::cout << "Label: " << label << " -- distance to query:"
+        std::cout << "Label: " << label << " -- distance to query: "
             << dist << std::endl;
     }
     std::cout << std::endl;
 
     const std::vector<std::pair<size_t, ValueType>> newObjs({
+        {30, {7, 7, 7, 7}},
         {60, {5, 3, 2, 2}},
         {70, {5, 2, 2, 5}},
     });
@@ -68,12 +69,14 @@ int main() {
 
     index.checkIntegrity();
 
-    std::cout << "Three closest items after re-insertion:" <<std::endl;
+    std::cout << "Three closest items after re-insertion: " <<std::endl;
     ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        std::cout << "Label: " << label << " -- distance to query:"
+        std::cout << "Label: " << label << " -- distance to query: "
             << dist << std::endl;
     }
+    std::cout << std::endl;
+
 
     std::cout << "Total time elapsed: " << sw.elapsed() << "μs" << std::endl;
 }

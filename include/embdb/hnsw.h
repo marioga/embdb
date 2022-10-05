@@ -42,7 +42,8 @@ namespace hnsw {
         }
 
         void checkIntegrity() const {
-            graph.checkIntegrity();
+            std::unordered_set<IdType> deleted = space->checkIntegrity();
+            graph.checkIntegrity(deleted);
         }
 
         void insert(const ValueType & value, LabelType label) {
@@ -50,14 +51,11 @@ namespace hnsw {
             size_t maxLayer;
             {
                 std::unique_lock insertLock(insertMutex);
-                id = space->getId(label);
-                if (id != INVALID_ID) {
+                id = space->add(value, label);
+                if (id == INVALID_ID) {
                     insertLock.unlock();
-                    // TODO: implement updates
                     throw std::runtime_error("Label already present");
                 }
-
-                id = space->add(value, label);
 
                 // determine top insertion layer by sampling from layerExpDist
                 std::exponential_distribution<double> layerExpDist(config.layerExpLambda);
@@ -67,7 +65,6 @@ namespace hnsw {
             }
 
             std::shared_lock sharedLock(deleteMutex);
-            std::unique_lock idLock(*graph.getMutex(id));
             std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
 
             IdType currEnterPoint = graph.enterPoint;
@@ -81,6 +78,8 @@ namespace hnsw {
             if (maxLayer <= graph.maxLayer) {
                 maxLayerLock.unlock();
             }
+
+            std::unique_lock idLock(*graph.getMutex(id));
 
             size_t layer = graph.maxLayer;
             while (layer > maxLayer) {
@@ -135,18 +134,19 @@ namespace hnsw {
 
         bool remove(LabelType label) {
             IdType id;
+            std::vector<IdVector> idNeighboursPerLayer;
             {
                 std::unique_lock deleteLock(deleteMutex);
                 {
                     std::unique_lock insertLock(insertMutex);
-                    id = space->getId(label);
+                    id = space->remove(label);
                     if (id == INVALID_ID) {
                         // label not found
                         return false;
                     }
 
-                    // makes node unreachable but does not delete its outlinks
-                    graph.remove(id);
+                    // makes node unreachable and retrieve its neighbours
+                    idNeighboursPerLayer = graph.remove(id);
                 }
 
                 std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
@@ -155,71 +155,60 @@ namespace hnsw {
                 }
             }
 
-            {
-                std::shared_lock deleteLock(deleteMutex);
-                std::unique_lock idLock(*graph.getMutex(id));
+            std::shared_lock deleteLock(deleteMutex);
 
-                for (size_t layer = 0; layer <= graph.getMaxLayer(id); layer++) {
-                    const size_t M = (layer > 0) ? config.M_ : config.M0_;
-                    IdVector neighbours;
-                    neighbours.reserve(M);
-                    for (IdType nid : graph.getNeighbours(id, layer)) {
-                        // some neighbours might have been deleted by another thread
-                        if (!graph.isDeleted(nid)) {
-                            neighbours.push_back(nid);
-                        }
-                    }
+            for (size_t layer = 0; layer < idNeighboursPerLayer.size(); layer++) {
+                IdVector & neighbours = idNeighboursPerLayer[layer];
+                // some neighbours might have been deleted by another thread
+                auto it = std::remove_if(neighbours.begin(), neighbours.end(),
+                                         [this](IdType nid) { return graph.isDeleted(nid); });
+                neighbours.erase(it, neighbours.end());
 
-                    std::unordered_set<IdType> candidateSet;
-                    for (IdType nid : neighbours) {
-                        candidateSet.insert(nid);
-                        std::unique_lock nidLock(*graph.getMutex(nid));
-                        for (IdType nnid : graph.getNeighbours(nid, layer)) {
-                            candidateSet.insert(nnid);
-                        }
-                    }
-
-                    NNVector candidates;
-                    candidates.reserve(config.efConstruction);
-                    for (IdType nid : neighbours) {
-                        const ValueType & nvalue = space->getValue(nid);
-                        for (IdType cid : candidateSet) {
-                            if (cid == nid) {
-                                continue;
-                            }
-
-                            dist_t dist = space->distance(nvalue, cid);
-                            if (candidates.size() < config.efConstruction) {
-                                candidates.emplace_back(cid, dist);
-                                if (candidates.size() == config.efConstruction) {
-                                    std::make_heap(candidates.begin(), candidates.end(),
-                                                maxHeapCompare);
-                                }
-                            } else if (dist < candidates.front().second) {
-                                std::pop_heap(candidates.begin(), candidates.end(),
-                                                maxHeapCompare);
-                                candidates.back() = std::make_pair(cid, dist);
-                                std::push_heap(candidates.begin(), candidates.end(),
-                                                maxHeapCompare);
-                            }
-                        }
-
-                        IdVector newNeighbours =
-                            selectNeighboursHeuristic(nvalue, candidates, M, layer);
-
-                        {
-                            std::unique_lock nidLock(*graph.getMutex(nid));
-                            graph.setNeighbours(nid, std::move(newNeighbours), layer);
-                        }
-                        // reset candidates
-                        candidates.clear();
+                std::unordered_set<IdType> candidateSet;
+                for (IdType nid : neighbours) {
+                    candidateSet.insert(nid);
+                    std::unique_lock nidLock(*graph.getMutex(nid));
+                    for (IdType nnid : graph.getNeighbours(nid, layer)) {
+                        candidateSet.insert(nnid);
                     }
                 }
-            }
 
-            {
-                std::unique_lock insertLock(insertMutex);
-                space->remove(id);
+                NNVector candidates;
+                candidates.reserve(config.efConstruction);
+                for (IdType nid : neighbours) {
+                    const ValueType & nvalue = space->getValue(nid);
+                    for (IdType cid : candidateSet) {
+                        if (cid == nid) {
+                            continue;
+                        }
+
+                        dist_t dist = space->distance(nvalue, cid);
+                        if (candidates.size() < config.efConstruction) {
+                            candidates.emplace_back(cid, dist);
+                            if (candidates.size() == config.efConstruction) {
+                                std::make_heap(candidates.begin(), candidates.end(),
+                                            maxHeapCompare);
+                            }
+                        } else if (dist < candidates.front().second) {
+                            std::pop_heap(candidates.begin(), candidates.end(),
+                                            maxHeapCompare);
+                            candidates.back() = std::make_pair(cid, dist);
+                            std::push_heap(candidates.begin(), candidates.end(),
+                                            maxHeapCompare);
+                        }
+                    }
+
+                    const size_t M = (layer > 0) ? config.M_ : config.M0_;
+                    IdVector newNeighbours =
+                        selectNeighboursHeuristic(nvalue, candidates, M, layer);
+
+                    {
+                        std::unique_lock nidLock(*graph.getMutex(nid));
+                        graph.setNeighbours(nid, std::move(newNeighbours), layer);
+                    }
+                    // reset candidates
+                    candidates.clear();
+                }
             }
 
             return true;

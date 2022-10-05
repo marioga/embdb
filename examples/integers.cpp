@@ -23,7 +23,7 @@ int main() {
 
     const size_t logEvery = config.capacity / 10;
 
-    std::cout << "Building index..." << std::endl;
+    std::cout << "Building index (first half)..." << std::endl;
     IndexType index = IndexType(config, &space);
     size_t count = 0;
     hnsw::StopWatch sw;
@@ -42,7 +42,7 @@ int main() {
 
     index.checkIntegrity();
 
-    std::cout << "Removing even labels..." << std::endl;
+    std::cout << "Removing first half even labels..." << std::endl;
     count = 0;
     sw.reset();
     #pragma omp parallel for
@@ -58,6 +58,9 @@ int main() {
     std::cout << "Completed removal -- size: " << index.size()
         << " -- time elapsed: " << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
 
+    index.checkIntegrity();
+
+    std::cout << "Building index (second half)..." << std::endl;
     count = 0;
     sw.reset();
     #pragma omp parallel for
@@ -70,7 +73,7 @@ int main() {
                 << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
         }
     }
-    std::cout << "Completed index build (first half) -- size: " << index.size()
+    std::cout << "Completed index build (second half) -- size: " << index.size()
         << " -- time elapsed: " << sw.elapsed<std::chrono::milliseconds>() << "ms" << std::endl;
 
     index.checkIntegrity();

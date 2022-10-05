@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "common.h"
@@ -10,12 +11,10 @@
 
 namespace hnsw {
     struct Node {
-        Node(IdType id = INVALID_ID, size_t maxLayer = 0)
-            : id(id)
-            , maxLayer(maxLayer)
+        Node(size_t maxLayer = 0)
+            : maxLayer(maxLayer)
             , deleted(false) {}
 
-        IdType id;
         size_t maxLayer;
         bool deleted;
 
@@ -36,8 +35,8 @@ namespace hnsw {
         }
 
         void reset(size_t maxLayer, const HnswConfig & config) {
-            this->deleted = false;
             this->maxLayer = maxLayer;
+            this->deleted = false;
 
             reserve(config);
 
@@ -75,11 +74,11 @@ namespace hnsw {
 
         void addNode(IdType id, size_t maxLayer) {
             if (id == nodes.size()) {
-                nodes.emplace_back(nodes.size(), maxLayer);
+                nodes.emplace_back(maxLayer);
                 // reserve capacities for node
                 nodes.back().reserve(config);
             } else {
-                if (!nodes[id].deleted) {
+                if (!isDeleted(id)) {
                     throw std::runtime_error("Corrupt index: overwriting active node.");
                 }
                 nodes[id].reset(maxLayer, config);
@@ -109,8 +108,10 @@ namespace hnsw {
             nodes[src].outEdges[layer] = std::move(tgts);
         }
 
-        void remove(IdType id) {
+        std::vector<IdVector> remove(IdType id) {
             Node & node = nodes[id];
+            node.deleted = true;
+
             for (size_t layer = 0; layer <= node.maxLayer; layer++) {
                 for (IdType src : node.inEdges[layer]) {
                     std::unique_lock lock(outMutexes[src]);
@@ -128,7 +129,8 @@ namespace hnsw {
                     tgtIns.pop_back();
                 }
             }
-            node.deleted = true;
+
+            return node.outEdges;
         }
 
         void findNewEnterPoint() {
@@ -137,59 +139,68 @@ namespace hnsw {
             enterPoint = INVALID_ID;
             maxLayer = 0;
             size_t maxOuts = 0;
-            for (const Node & node : nodes) {
-                if (node.id == oldEnterPoint || node.deleted) {
+            for (size_t id = 0; id < nodes.size(); id++) {
+                Node & node = nodes[id];
+                if (id == oldEnterPoint || node.deleted ) {
                     continue;
                 }
 
                 if (enterPoint == INVALID_ID || maxLayer < node.maxLayer ||
                     (maxLayer == node.maxLayer && maxOuts < node.outEdges[maxLayer].size())) {
-                    enterPoint = node.id;
+                    enterPoint = id;
                     maxLayer = node.maxLayer;
                     maxOuts = node.outEdges[maxLayer].size();
                 }
             }
         }
 
-        void checkIntegrity() const {
+        void checkIntegrity(const std::unordered_set<IdType> & deleted) const {
             // not thread-safe with inserting/modifying
-            IdType size = nodes.size();
-            if (size >= 1UL << 32) {
+            if (nodes.size() >= 1UL << 32) {
                 throw std::runtime_error("Index is too large; cannot check integrity");
             }
 
+            size_t _deleted = 0, valid = 0;
             std::vector<std::unordered_map<size_t, uint8_t>> edges(maxLayer + 1);
-            for (size_t id = 0; id < size; id++) {
+            for (size_t id = 0; id < nodes.size(); id++) {
                 const Node & node = nodes.at(id);
                 if (node.deleted) {
-                    continue;
+                    if (deleted.find(id) != deleted.end()) {
+                        _deleted++;
+                        continue;
+                    }
+
+                    throw std::runtime_error("Valid id: " + std::to_string(id) +
+                                             " deleted from graph");
                 }
 
-                if (node.id != id) {
-                    throw std::runtime_error("Invalid id: " + std::to_string(id));
-                }
+                valid++;
 
                 for (size_t layer = 0; layer <= node.maxLayer; layer++) {
                     if (node.outEdges[layer].size() > ((layer > 0) ? config.M_ : config.M0_)) {
-                        throw std::runtime_error("Invalid out size: " + std::to_string(node.id) +
+                        throw std::runtime_error("Invalid out size: " + std::to_string(id) +
                                                  " in layer: " + std::to_string(layer));
                     }
                     for (const IdType tgt : node.outEdges[layer]) {
-                        if (nodes[tgt].maxLayer < layer) {
+                        if (nodes[tgt].deleted || nodes[tgt].maxLayer < layer) {
                             throw std::runtime_error("Unexpected node: " + std::to_string(tgt) +
                                                      " in layer: " + std::to_string(layer));
                         }
-                        edges[layer][(node.id << 32) | tgt] |= 1;
+                        edges[layer][(id << 32) | tgt] |= 1;
                     }
 
                     for (const IdType src : node.inEdges[layer]) {
-                        if (nodes[src].maxLayer < layer) {
+                        if (nodes[src].deleted || nodes[src].maxLayer < layer) {
                             throw std::runtime_error("Unexpected node: " + std::to_string(src) +
                                                      " in layer: " + std::to_string(layer));
                         }
-                        edges[layer][(src << 32) | node.id] |= 2;
+                        edges[layer][(src << 32) | id] |= 2;
                     }
                 }
+            }
+
+            if (_deleted != deleted.size()) {
+                throw std::runtime_error("Discrepancy between deleted in graph and space");
             }
 
             for (size_t layer = 0; layer < edges.size(); layer++) {

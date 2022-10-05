@@ -2,6 +2,7 @@
 #define SPACE_H
 
 #include <queue>
+#include <unordered_set>
 #include <vector>
 
 #include "common.h"
@@ -36,6 +37,10 @@ namespace hnsw {
             capacity_ = capacity;
         }
 
+        size_t capacity() const {
+            return capacity_;
+        }
+
         size_t size() const {
             return size_;
         }
@@ -48,14 +53,10 @@ namespace hnsw {
             return labels[id];
         }
 
-        IdType getId(LabelType label) const {
-            auto it = labelsInv.find(label);
-            return (it != labelsInv.end()) ? it->second : INVALID_ID;
-        }
-
         virtual IdType add(const ValueType & value, LabelType label) {
-            if (size_ >= capacity_) {
-                throw std::runtime_error("Capacity reached -- index must be resized");
+            if (labelsInv.find(label) != labelsInv.end()) {
+                // label already present
+                return INVALID_ID;
             }
 
             IdType id;
@@ -65,6 +66,9 @@ namespace hnsw {
                 labels[id] = label;
                 elements[id] = value;
             } else {
+                if (size_ >= capacity_) {
+                    throw std::runtime_error("Capacity reached -- index must be resized");
+                }
                 id = size_;
                 labels.push_back(label);
                 elements.push_back(value);
@@ -76,10 +80,50 @@ namespace hnsw {
             return id;
         }
 
-        virtual void remove(IdType id) {
-            labelsInv.erase(labels[id]);
+        virtual IdType remove(LabelType label) {
+            auto it = labelsInv.find(label);
+            if (it == labelsInv.end()) {
+                return INVALID_ID;
+            }
+
+            IdType id = it->second;
+            labelsInv.erase(it);
             deleted.push(id);
             size_--;
+
+            return id;
+        }
+
+        virtual std::unordered_set<IdType> checkIntegrity() const {
+            std::unordered_set<IdType> ret;
+            std::queue<IdType> deletedCopy(deleted);
+            while (!deletedCopy.empty()) {
+                IdType did = deletedCopy.front();
+                deletedCopy.pop();
+                ret.insert(did);
+            }
+
+            size_t _deleted = 0, valid = 0;
+            for (IdType id = 0; id < labels.size(); id++) {
+                if (auto it = ret.find(id); it != ret.end()) {
+                    _deleted++;
+                    continue;
+                }
+
+                valid++;
+                LabelType label = labels[id];
+                auto it = labelsInv.find(label);
+                if (it == labelsInv.end() || it->second != id) {
+                    throw std::runtime_error("Invalid id-label pair: " + std::to_string(id) +
+                                             "-" + std::to_string(label));
+                }
+            }
+
+            if (valid != size_ || valid != labelsInv.size() || _deleted != deleted.size()) {
+                throw std::runtime_error("Size discrepancy");
+            }
+
+            return ret;
         }
 
      protected:
