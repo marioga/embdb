@@ -1,4 +1,5 @@
 #include <iostream>
+#include "omp.h"
 
 #include "embdb/hnsw.h"
 
@@ -27,6 +28,7 @@ int main() {
     IndexType index = IndexType(config, &space);
     size_t count = 0;
     hnsw::StopWatch sw;
+    // omp_set_num_threads(2);
     #pragma omp parallel for
     for (size_t idx = 0; idx < config.capacity / 2; idx++) {
         index.insert(static_cast<int>(idx), idx);
@@ -65,6 +67,9 @@ int main() {
     sw.reset();
     #pragma omp parallel for
     for (size_t idx = config.capacity / 2; idx < config.capacity; idx++) {
+        // if ((idx - config.capacity / 2) % 2 == 0) {
+        //     index.remove(idx - config.capacity / 2);
+        // }
         index.insert(static_cast<int>(idx), idx);
         #pragma omp atomic
         ++count;
@@ -79,12 +84,12 @@ int main() {
     index.checkIntegrity();
 
     const int midPoint = static_cast<int>(config.capacity / 2);
-    const std::vector<int> queries{101, -333, midPoint, 703071, 3040446, 7345678};
+    const std::vector<int> queries{-333, 0, 101, midPoint, 703071, 3040446, 7345678};
 
     for (int query : queries) {
         auto ret = index.searchKNN(query, k);
         std::cout << "Querying for label: " << query << std::endl;
-        for (size_t i = 0; i < k; i++) {
+        for (size_t i = 0; i < ret.size(); i++) {
             auto [label, dist] = ret[i];
             std::cout << "Rank: " << i << " -- label: " << label
                 << ", dist: " << dist << std::endl;

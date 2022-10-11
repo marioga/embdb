@@ -53,6 +53,11 @@ namespace hnsw {
             return labels[id];
         }
 
+        IdType getId(LabelType label) const {
+            auto it = labelsInv.find(label);
+            return (it == labelsInv.end()) ? INVALID_ID : it->second;
+        }
+
         virtual IdType add(const ValueType & value, LabelType label) {
             if (labelsInv.find(label) != labelsInv.end()) {
                 // label already present
@@ -80,18 +85,10 @@ namespace hnsw {
             return id;
         }
 
-        virtual IdType remove(LabelType label) {
-            auto it = labelsInv.find(label);
-            if (it == labelsInv.end()) {
-                return INVALID_ID;
-            }
-
-            IdType id = it->second;
-            labelsInv.erase(it);
+        virtual void remove(IdType id) {
+            labelsInv.erase(labels[id]);
             deleted.push(id);
             size_--;
-
-            return id;
         }
 
         virtual std::unordered_set<IdType> checkIntegrity() const {

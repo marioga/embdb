@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <functional>
 #include <mutex>
-#include <shared_mutex>
 #include <random>
 #include <unordered_set>
 #include <vector>
@@ -64,8 +63,8 @@ namespace hnsw {
                 graph.addNode(id, maxLayer);
             }
 
-            std::shared_lock sharedLock(deleteMutex);
             std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
+            graph.refreshEnterPoint();
 
             IdType currEnterPoint = graph.enterPoint;
             if (currEnterPoint == INVALID_ID) {
@@ -134,35 +133,24 @@ namespace hnsw {
 
         bool remove(LabelType label) {
             IdType id;
-            std::vector<IdVector> idNeighboursPerLayer;
             {
-                std::unique_lock deleteLock(deleteMutex);
-                {
-                    std::unique_lock insertLock(insertMutex);
-                    id = space->remove(label);
-                    if (id == INVALID_ID) {
-                        // label not found
-                        return false;
-                    }
-
-                    // makes node unreachable and retrieve its neighbours
-                    idNeighboursPerLayer = graph.remove(id);
+                std::unique_lock insertLock(insertMutex);
+                id = space->getId(label);
+                if (id == INVALID_ID) {
+                    // label not found
+                    return false;
                 }
 
-                std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
-                if (graph.enterPoint == id) {
-                    graph.findNewEnterPoint();
-                }
+                graph.removeNode(id);
             }
 
-            std::shared_lock deleteLock(deleteMutex);
+            {
+                std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
+                graph.refreshEnterPoint();
+            }
 
-            for (size_t layer = 0; layer < idNeighboursPerLayer.size(); layer++) {
-                IdVector & neighbours = idNeighboursPerLayer[layer];
-                // some neighbours might have been deleted by another thread
-                auto it = std::remove_if(neighbours.begin(), neighbours.end(),
-                                         [this](IdType nid) { return graph.isDeleted(nid); });
-                neighbours.erase(it, neighbours.end());
+            for (size_t layer = 0; layer <= graph.getMaxLayer(id); layer++) {
+                IdVector neighbours = graph.getNeighbours(id, layer);
 
                 std::unordered_set<IdType> candidateSet;
                 for (IdType nid : neighbours) {
@@ -187,14 +175,14 @@ namespace hnsw {
                             candidates.emplace_back(cid, dist);
                             if (candidates.size() == config.efConstruction) {
                                 std::make_heap(candidates.begin(), candidates.end(),
-                                            maxHeapCompare);
+                                               maxHeapCompare);
                             }
                         } else if (dist < candidates.front().second) {
                             std::pop_heap(candidates.begin(), candidates.end(),
-                                            maxHeapCompare);
+                                          maxHeapCompare);
                             candidates.back() = std::make_pair(cid, dist);
                             std::push_heap(candidates.begin(), candidates.end(),
-                                            maxHeapCompare);
+                                           maxHeapCompare);
                         }
                     }
 
@@ -204,11 +192,18 @@ namespace hnsw {
 
                     {
                         std::unique_lock nidLock(*graph.getMutex(nid));
-                        graph.setNeighbours(nid, std::move(newNeighbours), layer);
+                        if (!graph.isDeleted(nid)) {
+                            graph.setNeighbours(nid, std::move(newNeighbours), layer, true);
+                        }
                     }
                     // reset candidates
                     candidates.clear();
                 }
+            }
+
+            {
+                std::unique_lock insertLock(insertMutex);
+                space->remove(id);
             }
 
             return true;
@@ -410,7 +405,6 @@ namespace hnsw {
         SpaceType * space;
 
         mutable std::mutex insertMutex;
-        mutable std::shared_mutex deleteMutex;
 
         std::mt19937 layerGen;
     };

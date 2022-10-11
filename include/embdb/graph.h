@@ -93,55 +93,78 @@ namespace hnsw {
             nodes[src].outEdges[layer].push_back(tgt);
         }
 
-        void setNeighbours(IdType src, IdVector && tgts, size_t layer) {
+        void setNeighbours(IdType src, IdVector && tgts, size_t layer,
+                           bool checkTgtDeleted = false) {
             for (IdType prevTgt : nodes[src].outEdges[layer]) {
-                std::unique_lock lock(inMutexes[prevTgt]);
+                std::unique_lock prevInLock(inMutexes[prevTgt]);
                 IdVector & prevIns = nodes[prevTgt].inEdges[layer];
-                auto it = std::find(prevIns.begin(), prevIns.end(), src);
-                *it = std::move(prevIns.back());
-                prevIns.pop_back();
+                if (!isDeleted(prevTgt)) {
+                    auto it = std::find(prevIns.begin(), prevIns.end(), src);
+                    *it = std::move(prevIns.back());
+                    prevIns.pop_back();
+                }
             }
+
             for (IdType tgt : tgts) {
                 std::unique_lock currInLock(inMutexes[tgt]);
-                nodes[tgt].inEdges[layer].push_back(src);
+                if (!isDeleted(tgt)) {
+                    nodes[tgt].inEdges[layer].push_back(src);
+                }
             }
-            nodes[src].outEdges[layer] = std::move(tgts);
+
+            IdVector & out = nodes[src].outEdges[layer];
+            out = std::move(tgts);
+            if (checkTgtDeleted) {
+                // remove deleted neighbours
+                auto it = std::remove_if(out.begin(), out.end(),
+                                         [this](IdType id) { return isDeleted(id); });
+                out.erase(it, out.end());
+            }
         }
 
-        std::vector<IdVector> remove(IdType id) {
+        void removeNode(IdType id) {
             Node & node = nodes[id];
-            node.deleted = true;
+            {
+                std::unique_lock outLock(outMutexes[id]);
+                std::unique_lock inLock(inMutexes[id]);
+                node.deleted = true;
+            }
 
             for (size_t layer = 0; layer <= node.maxLayer; layer++) {
                 for (IdType src : node.inEdges[layer]) {
                     std::unique_lock lock(outMutexes[src]);
                     IdVector & srcOuts = nodes[src].outEdges[layer];
                     auto it = std::find(srcOuts.begin(), srcOuts.end(), id);
-                    *it = std::move(srcOuts.back());
-                    srcOuts.pop_back();
+                    if (it != srcOuts.end()) {
+                        *it = std::move(srcOuts.back());
+                        srcOuts.pop_back();
+                    }
                 }
 
                 for (IdType tgt : node.outEdges[layer]) {
                     std::unique_lock lock(inMutexes[tgt]);
                     IdVector & tgtIns = nodes[tgt].inEdges[layer];
                     auto it = std::find(tgtIns.begin(), tgtIns.end(), id);
-                    *it = std::move(tgtIns.back());
-                    tgtIns.pop_back();
+                    if (it != tgtIns.end()) {
+                        *it = std::move(tgtIns.back());
+                        tgtIns.pop_back();
+                    }
                 }
             }
-
-            return node.outEdges;
         }
 
-        void findNewEnterPoint() {
+        void refreshEnterPoint() {
             // TODO: Is this good enough?
-            IdType oldEnterPoint = enterPoint;
+            if (enterPoint == INVALID_ID || !nodes[enterPoint].deleted) {
+                return;
+            }
+
             enterPoint = INVALID_ID;
             maxLayer = 0;
             size_t maxOuts = 0;
             for (size_t id = 0; id < nodes.size(); id++) {
                 Node & node = nodes[id];
-                if (id == oldEnterPoint || node.deleted ) {
+                if (node.deleted) {
                     continue;
                 }
 
