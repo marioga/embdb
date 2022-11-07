@@ -155,10 +155,6 @@ namespace hnsw {
 
         void refreshEnterPoint() {
             // TODO: Is this good enough?
-            if (enterPoint == INVALID_ID || !nodes[enterPoint].deleted) {
-                return;
-            }
-
             enterPoint = INVALID_ID;
             maxLayer = 0;
             size_t maxOuts = 0;

@@ -3,6 +3,8 @@
 #include "embdb/hnsw.h"
 
 int main() {
+    hnsw::initLogging();
+
     hnsw::StopWatch sw;
 
     using _L2Space = hnsw::L2Space<int>;
@@ -25,18 +27,16 @@ int main() {
     ValueType query({5, 3, 3, 2});
     for (const auto & [label, obj] : objs) {
         index.insert(obj, label);
-        std::cout << "Label: " << label << " inserted -- distance to query: "
-            << space.distance(obj, query) << std::endl;
+        SPDLOG_INFO("Label: {} inserted -- distance to query: {}",
+                    label, space.distance(obj, query));
     }
-    std::cout << std::endl;
 
-    std::cout << "Three closest items: " <<std::endl;
+    SPDLOG_INFO("Three closest items: ");
     auto ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        std::cout << "Label: " << label << " -- distance to query: "
-            << dist << std::endl;
+        SPDLOG_INFO("Label: {} inserted -- distance to query: {}", label, dist);
     }
-    std::cout << std::endl;
+    SPDLOG_INFO(std::vector<int>({3, 4, 5}));
 
     index.checkIntegrity();
 
@@ -46,13 +46,11 @@ int main() {
 
     index.checkIntegrity();
 
-    std::cout << "Three closest items after deletion: " <<std::endl;
+    SPDLOG_INFO("Three closest items after deletion: ");
     ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        std::cout << "Label: " << label << " -- distance to query: "
-            << dist << std::endl;
+        SPDLOG_INFO("Label: {} inserted -- distance to query: {}", label, dist);
     }
-    std::cout << std::endl;
 
     const std::vector<std::pair<size_t, ValueType>> newObjs({
         {30, {7, 7, 7, 7}},
@@ -61,22 +59,19 @@ int main() {
     });
 
     for (const auto & [label, obj] : newObjs) {
+        index.remove(label);
         index.insert(obj, label);
-        std::cout << "Label: " << label << " inserted -- distance to query: "
-            << space.distance(obj, query) << std::endl;
+        SPDLOG_INFO("Label: {} inserted -- distance to query: {}",
+                    label, space.distance(obj, query));
     }
-    std::cout << std::endl;
 
     index.checkIntegrity();
 
-    std::cout << "Three closest items after re-insertion: " <<std::endl;
+    SPDLOG_INFO("Three closest items after re-insertion: ");
     ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        std::cout << "Label: " << label << " -- distance to query: "
-            << dist << std::endl;
+        SPDLOG_INFO("Label: {} inserted -- distance to query: {}", label, dist);
     }
-    std::cout << std::endl;
 
-
-    std::cout << "Total time elapsed: " << sw.elapsed() << "μs" << std::endl;
+    SPDLOG_INFO("Total time elapsed: {}μs", sw.elapsed());
 }

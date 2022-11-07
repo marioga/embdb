@@ -64,7 +64,6 @@ namespace hnsw {
             }
 
             std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
-            graph.refreshEnterPoint();
 
             IdType currEnterPoint = graph.enterPoint;
             if (currEnterPoint == INVALID_ID) {
@@ -146,7 +145,9 @@ namespace hnsw {
 
             {
                 std::unique_lock maxLayerLock(*graph.getMaxLayerMutex());
-                graph.refreshEnterPoint();
+                if (graph.enterPoint == id) {
+                    graph.refreshEnterPoint();
+                }
             }
 
             for (size_t layer = 0; layer <= graph.getMaxLayer(id); layer++) {
