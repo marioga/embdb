@@ -26,6 +26,9 @@ bool readVector(std::ifstream * istrm, int expectedDim, std::vector<T> & vec) {
 }
 
 void siftTest() {
+    /*
+    SIFT datasets are available here: http://corpus-texmex.irisa.fr/
+    */
     const int dim = 128;
     const size_t k = 16;
     using _L2Space = hnsw::L2Space<float>;

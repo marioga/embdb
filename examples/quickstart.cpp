@@ -34,9 +34,8 @@ int main() {
     SPDLOG_INFO("Three closest items: ");
     auto ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        SPDLOG_INFO("Label: {} inserted -- distance to query: {}", label, dist);
+        SPDLOG_INFO("Label: {} -- distance to query: {}", label, dist);
     }
-    SPDLOG_INFO(std::vector<int>({3, 4, 5}));
 
     index.checkIntegrity();
 
@@ -49,7 +48,7 @@ int main() {
     SPDLOG_INFO("Three closest items after deletion: ");
     ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        SPDLOG_INFO("Label: {} inserted -- distance to query: {}", label, dist);
+        SPDLOG_INFO("Label: {} -- distance to query: {}", label, dist);
     }
 
     const std::vector<std::pair<size_t, ValueType>> newObjs({
@@ -70,7 +69,7 @@ int main() {
     SPDLOG_INFO("Three closest items after re-insertion: ");
     ret = index.searchKNN(query, 3);
     for (const auto & [label, dist] : ret) {
-        SPDLOG_INFO("Label: {} inserted -- distance to query: {}", label, dist);
+        SPDLOG_INFO("Label: {} -- distance to query: {}", label, dist);
     }
 
     SPDLOG_INFO("Total time elapsed: {}μs", sw.elapsed());

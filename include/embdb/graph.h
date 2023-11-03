@@ -179,7 +179,7 @@ namespace hnsw {
                 throw std::runtime_error("Index is too large; cannot check integrity");
             }
 
-            size_t _deleted = 0, valid = 0;
+            size_t _deleted = 0;
             std::vector<std::unordered_map<size_t, uint8_t>> edges(maxLayer + 1);
             for (size_t id = 0; id < nodes.size(); id++) {
                 const Node & node = nodes.at(id);
@@ -192,8 +192,6 @@ namespace hnsw {
                     throw std::runtime_error("Valid id: " + std::to_string(id) +
                                              " deleted from graph");
                 }
-
-                valid++;
 
                 for (size_t layer = 0; layer <= node.maxLayer; layer++) {
                     if (node.outEdges[layer].size() > ((layer > 0) ? config.M_ : config.M0_)) {
